@@ -85,6 +85,9 @@ audacity::cloud::audiocom::sync::AudioComDialogBase::ShowDialog(
    Show();
    Raise();
 
+   if (mDefaultButton != nullptr)
+      mDefaultButton->SetFocus();
+
    {
       wxWindowDisabler disabler { this };
 
@@ -208,6 +211,7 @@ void AudioComDialogBase::AddButton(
 
    if (type & DefaultButton)
       button->SetDefault();
+      mDefaultButton = button;
 }
 
 void AudioComDialogBase::SetDialogTitle(const TranslatableString& dialog)
