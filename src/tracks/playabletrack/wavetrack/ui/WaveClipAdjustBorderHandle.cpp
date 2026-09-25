@@ -398,6 +398,11 @@ UIHandlePtr WaveClipAdjustBorderHandle::HitAnywhere(
          continue;
 
       auto clipRect = ClipParameters::GetClipRect(clip, zoomInfo, rect);
+
+      //Skip clips that are under 10px
+      if (clipRect.GetWidth() < 10)
+         continue;
+         
       if(std::abs(px - clipRect.GetLeft()) <= BoundaryThreshold * 2)
          rightInterval = interval;
       else if (std::abs(px - clipRect.GetRight()) <= BoundaryThreshold * 2)
