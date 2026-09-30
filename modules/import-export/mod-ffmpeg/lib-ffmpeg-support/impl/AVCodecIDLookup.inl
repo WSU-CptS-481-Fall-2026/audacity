@@ -435,9 +435,16 @@ AVCodecIDFwd GetAVCodeID(AudacityAVCodecID codecID)
 
 AudacityAVCodecID GetAudacityCodecID(AVCodecIDFwd codecID)
 {
-   for (int id = AUDACITY_AV_CODEC_ID_NONE;
-        id < AUDACITY_AV_CODEC_ID_LAST; ++id)
+   for (int id = AUDACITY_AV_CODEC_ID_NONE; id < AUDACITY_AV_CODEC_ID_LAST; ++id)
    {
+      // FFmpeg's FIRST_* values are range markers that share their numeric
+      // value with a real codec (e.g. FIRST_AUDIO == PCM_S16LE). Skip them,
+      // so the real codec is returned instead of the marker.
+      if (id == AUDACITY_AV_CODEC_ID_FIRST_AUDIO ||
+         id == AUDACITY_AV_CODEC_ID_FIRST_SUBTITLE ||
+         id == AUDACITY_AV_CODEC_ID_FIRST_UNKNOWN)
+         continue;
+
       if (AVCodecIDLookup[id] == codecID)
          return static_cast<AudacityAVCodecIDValue>(id);
    }
