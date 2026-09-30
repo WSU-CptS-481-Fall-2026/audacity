@@ -1165,6 +1165,7 @@ bool ExportFFmpegOptions::ReportIfBadCombination()
    // However, the list updating now seems to be working correctly
    // making it impossible to select illegal combinations
    bool bFound = false;
+
    for (int i = 0; CompatibilityList[i].fmt != NULL; i++)
    {
       if (*selfmt == CompatibilityList[i].fmt)
