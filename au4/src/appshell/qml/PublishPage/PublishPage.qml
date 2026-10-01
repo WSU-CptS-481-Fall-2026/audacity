@@ -34,8 +34,31 @@ DockPage {
 
     property var topToolKeyNavSec
 
+    mainToolBars: [
+        DockToolBar {
+            id: publishToolBar
+
+            objectName: "PublishToolBar"
+            title: qsTrc("appshell", "Publish toolbar")
+
+            floatable: false
+            closable: false
+            resizable: false
+            separatorsVisible: false
+
+            alignment: DockToolBarAlignment.Center
+            contentBottomPadding: 2
+
+            PublishToolBar {
+                navigationPanel.section: root.topToolKeyNavSec
+                navigationPanel.order: 2
+            }
+        }
+    ]
+
     central: Text {
         text: "Publish"
     }
+}
 
 }
