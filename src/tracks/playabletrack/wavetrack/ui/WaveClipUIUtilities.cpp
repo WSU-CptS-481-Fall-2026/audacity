@@ -85,11 +85,12 @@ WaveClipUIUtilities::GetWaveClipMenuItems()
       {},
       { L"Split", XO("Split Clip") },
       { L"Join", XO("Join Clips") },
-      { L"TrackMute", XO("Mute/Unmute Track") },
-      {},
       { L"RenameClip", XO("Rename Clip...") },
+      {},
       { L"ChangePitchAndSpeed", XO("Pitch and Speed...") },
       { L"RenderPitchAndSpeed", XO("Render Pitch and Speed") },
+      {},
+      { L"TrackMute", XO("Mute/Unmute Track") },
    };
    ;
 }
