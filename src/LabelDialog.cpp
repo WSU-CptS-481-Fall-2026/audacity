@@ -318,9 +318,9 @@ bool LabelDialog::TransferDataToWindow()
       mGrid->SetCellValue(i, Col_Track, TrackName(rd.index));
       mGrid->SetCellValue(i, Col_Label, rd.title);
       mGrid->SetCellValue(i, Col_Stime,
-         wxString::Format(wxT("%g"), rd.selectedRegion.t0()));
+         wxString::Format(wxT("%.9g"), rd.selectedRegion.t0()));
       mGrid->SetCellValue(i, Col_Etime,
-         wxString::Format(wxT("%g"), rd.selectedRegion.t1()));
+         wxString::Format(wxT("%.9g"), rd.selectedRegion.t1()));
       mGrid->SetCellValue(i, Col_Lfreq,
          wxString::Format(wxT("%g"), rd.selectedRegion.f0()));
       mGrid->SetCellValue(i, Col_Hfreq,
@@ -858,7 +858,7 @@ void LabelDialog::OnChangeStime(wxGridEvent & WXUNUSED(event), int row, RowData 
    double t {};
    mGrid->GetCellValue(row, Col_Stime).ToDouble(&t);
    rd->selectedRegion.setT0(t, false);
-   mGrid->SetCellValue(row, Col_Etime, wxString::Format(wxT("%g"),
+   mGrid->SetCellValue(row, Col_Etime, wxString::Format(wxT("%.9g"),
                        rd->selectedRegion.t1()));
 
    return;
@@ -870,7 +870,7 @@ void LabelDialog::OnChangeEtime(wxGridEvent & WXUNUSED(event), int row, RowData 
    double t {};
    mGrid->GetCellValue(row, Col_Etime).ToDouble(&t);
    rd->selectedRegion.setT1(t, false);
-   mGrid->SetCellValue(row, Col_Stime, wxString::Format(wxT("%g"),
+   mGrid->SetCellValue(row, Col_Stime, wxString::Format(wxT("%.9g"),
                        rd->selectedRegion.t0()));
 
    return;
