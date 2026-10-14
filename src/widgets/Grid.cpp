@@ -184,7 +184,6 @@ bool NumericEditor::EndEdit(int WXUNUSED(row), int WXUNUSED(col), const wxGrid *
    bool changed = newtime != mOld;
 
    if (changed) {
-      //allow for 9 sig figs for format values, if any requires less it will be rounded autoamically by the formater
       mValueAsString = wxString::Format(wxT("%.9g"), newtime);
       *newval = mValueAsString;
    }
