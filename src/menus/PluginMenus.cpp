@@ -33,7 +33,7 @@
 #include "prefs/EffectsPrefs.h"
 #include "DoEffect.h"
 #include "prefs/GUIPrefs.h"
-
+#include "prefs/SpectrumPrefs.h"
 // private helper classes and functions
 namespace {
 
@@ -81,6 +81,9 @@ void OnResetConfig(const CommandContext &context)
 
    ResetPreferences();
 
+   //cache was not being invalided resulting in no reset to default.
+   SpectrogramSettings::ResetPreferencesCache();
+
    // Directory will be reset on next restart.
    FileNames::UpdateDefaultPath(FileNames::Operation::Temp, TempDirectory::DefaultTempDir());
 
@@ -96,6 +99,7 @@ void OnResetConfig(const CommandContext &context)
    SyncLockTracks.Reset();
    SoundActivatedRecord.Reset();
    SelectionToolbarMode.Reset();
+   
 
    ShowRMSPref().Reset();
    ShowClippingPref().Reset();

@@ -143,6 +143,24 @@ SpectrogramSettings::SpectrogramSettings()
    LoadPrefs();
 }
 
+void SpectrogramSettings::ResetPreferencesCache()
+{
+   SpectrumAlgorithm.Invalidate();
+   SpectrumEnableSelection.Invalidate();
+   SpectrumFFTSize.Invalidate();
+   SpectrumFrequencyGain.Invalidate();
+   SpectrumGain.Invalidate();
+   SpectrumGrayscale.Invalidate();
+   SpectrumMaxFreq.Invalidate();
+   SpectrumMinFreq.Invalidate();
+   SpectrumRange.Invalidate();
+   SpectrumScale.Invalidate();
+   SpectrumWindowFunction.Invalidate();
+   SpectrumZeroPaddingFactor.Invalidate();
+   
+   defaults().LoadPrefs();
+}
+
 SpectrogramSettings::SpectrogramSettings(const SpectrogramSettings &other)
    : minFreq(other.minFreq)
    , maxFreq(other.maxFreq)

@@ -96,6 +96,8 @@ public:
    SpectrogramSettings& operator= (const SpectrogramSettings &other);
    ~SpectrogramSettings();
 
+   static void ResetPreferencesCache();
+
    PointerType Clone() const override;
 
    bool IsDefault() const
@@ -114,6 +116,7 @@ public:
    void CacheWindows();
    void ConvertToEnumeratedWindowSizes();
    void ConvertToActualWindowSizes();
+   
 
    // Need to be told what the bin unit is, as this structure does not know
    // the rate
