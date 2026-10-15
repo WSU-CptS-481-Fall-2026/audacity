@@ -81,7 +81,7 @@ void OnResetConfig(const CommandContext &context)
 
    ResetPreferences();
 
-   //cache was not being invalided resulting in no reset to default.
+   //cache was not being invalidated resulting in no reset to default.
    SpectrogramSettings::ResetPreferencesCache();
 
    // Directory will be reset on next restart.
