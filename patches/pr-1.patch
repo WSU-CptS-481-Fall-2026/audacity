@@ -1,0 +1,61 @@
+From 54cb8bc962e48f20bd8548a61cf91c361fb9f8b2 Mon Sep 17 00:00:00 2001
+From: Travis Takushi <travis.takushi@wsu.edu>
+Date: Wed, 23 Sep 2026 16:41:40 -0700
+Subject: [PATCH] Focus the default button in audio.com dialogs (#6016)
+
+AudioComDialogBase shows dialogs modelessly (Show() plus its own event
+loop) rather than with ShowModal(), so nothing moved keyboard focus into
+the dialog. The default button was marked with SetDefault() but never
+focused, so keyboard-only users could not dismiss the Success dialog
+with Enter.
+
+Store the default button in AddButton() and give it focus after the
+dialog is shown. This affects every audio.com dialog with a default
+button. This allows for multiple windows within Audacity UI to be explored with keyboard only for ease of use.
+---
+ .../mod-cloud-audiocom/ui/dialogs/AudioComDialogBase.cpp      | 4 ++++
+ .../mod-cloud-audiocom/ui/dialogs/AudioComDialogBase.h        | 2 ++
+ 2 files changed, 6 insertions(+)
+
+diff --git a/modules/sharing/mod-cloud-audiocom/ui/dialogs/AudioComDialogBase.cpp b/modules/sharing/mod-cloud-audiocom/ui/dialogs/AudioComDialogBase.cpp
+index 128f4b5d499..a967cc4dcb6 100644
+--- a/modules/sharing/mod-cloud-audiocom/ui/dialogs/AudioComDialogBase.cpp
++++ b/modules/sharing/mod-cloud-audiocom/ui/dialogs/AudioComDialogBase.cpp
+@@ -85,6 +85,9 @@ audacity::cloud::audiocom::sync::AudioComDialogBase::ShowDialog(
+    Show();
+    Raise();
+ 
++   if (mDefaultButton != nullptr)
++      mDefaultButton->SetFocus();
++
+    {
+       wxWindowDisabler disabler { this };
+ 
+@@ -208,6 +211,7 @@ void AudioComDialogBase::AddButton(
+ 
+    if (type & DefaultButton)
+       button->SetDefault();
++      mDefaultButton = button;
+ }
+ 
+ void AudioComDialogBase::SetDialogTitle(const TranslatableString& dialog)
+diff --git a/modules/sharing/mod-cloud-audiocom/ui/dialogs/AudioComDialogBase.h b/modules/sharing/mod-cloud-audiocom/ui/dialogs/AudioComDialogBase.h
+index 9cdc67cd76e..d1bc7140c0e 100644
+--- a/modules/sharing/mod-cloud-audiocom/ui/dialogs/AudioComDialogBase.h
++++ b/modules/sharing/mod-cloud-audiocom/ui/dialogs/AudioComDialogBase.h
+@@ -21,6 +21,7 @@
+ class AudacityProject;
+ 
+ class wxBoxSizer;
++class wxButton;
+ 
+ namespace audacity::cloud::audiocom::sync
+ {
+@@ -82,6 +83,7 @@ class AudioComDialogBase : wxDialogWrapper
+ 
+    wxBoxSizer* mDialogSizer;
+    wxBoxSizer* mButtonSizer;
++   wxButton* mDefaultButton{};
+ 
+    DialogButtonIdentifier mEscButtonIdentifier { CancelButtonIdentifier() };
+    DialogButtonIdentifier mResultButtonIdentifier;

@@ -1,0 +1,184 @@
+From 9287517632baa8b380beae92c43745c2a62efc3e Mon Sep 17 00:00:00 2001
+From: NastyChopSticks <kaden.metzger@gmail.com>
+Date: Tue, 29 Sep 2026 16:43:55 -0700
+Subject: [PATCH 1/4] Fixed looping time posistions causing ghost audio in
+ loops
+
+---
+ src/ProjectAudioManager.cpp | 17 ++++++++++++++---
+ 1 file changed, 14 insertions(+), 3 deletions(-)
+
+diff --git a/src/ProjectAudioManager.cpp b/src/ProjectAudioManager.cpp
+index 1e43b0a94e5..87a02dc875a 100644
+--- a/src/ProjectAudioManager.cpp
++++ b/src/ProjectAudioManager.cpp
+@@ -399,8 +399,18 @@ int ProjectAudioManager::PlayPlayRegion(const SelectedRegion &selectedRegion,
+       if (backwards)
+          std::swap(t0, t1);
+ 
+-      t0 = std::max(0.0, std::min(t0, latestEnd));
+-      t1 = std::max(0.0, std::min(t1, latestEnd));
++      //Fixed bug here, we need to set t1 to the looping end time not the track end time (see latestEnd for reference).
++      if (projectAudioManager.Looping())
++      {
++         t0 = std::max(0.0, t0);
++         t1 = std::max(0.0, t1);
++      }
++      else
++      {
++         t0 = std::max(0.0, std::min(t0, latestEnd));
++         t1 = std::max(0.0, std::min(t1, latestEnd));
++      }
++      
+ 
+       if (backwards)
+          std::swap(t0, t1);
+@@ -432,7 +442,8 @@ int ProjectAudioManager::PlayPlayRegion(const SelectedRegion &selectedRegion,
+       else {
+          double mixerLimit = t1;
+          if (newDefault) {
+-            mixerLimit = latestEnd;
++            //Fixed bug here, mixerLimit was set to the track ending time instead of the loop ending time
++            mixerLimit = std::max(latestEnd, t1);
+             if (pStartTime && *pStartTime >= t1)
+                t1 = latestEnd;
+          }
+
+From e0cea9704eedcab7ca8af4ebaeb84b442e19dedd Mon Sep 17 00:00:00 2001
+From: NastyChopSticks <kaden.metzger@gmail.com>
+Date: Wed, 14 Oct 2026 17:17:52 -0700
+Subject: [PATCH 2/4] fixed spectrogram pref reset not working
+
+---
+ .../SpectrogramSettings.cpp                    | 18 ++++++++++++++++++
+ .../SpectrogramSettings.h                      |  3 +++
+ src/menus/PluginMenus.cpp                      |  6 +++++-
+ 3 files changed, 26 insertions(+), 1 deletion(-)
+
+diff --git a/libraries/lib-wave-track-settings/SpectrogramSettings.cpp b/libraries/lib-wave-track-settings/SpectrogramSettings.cpp
+index 8b02434202f..65b6b7bb391 100644
+--- a/libraries/lib-wave-track-settings/SpectrogramSettings.cpp
++++ b/libraries/lib-wave-track-settings/SpectrogramSettings.cpp
+@@ -143,6 +143,24 @@ SpectrogramSettings::SpectrogramSettings()
+    LoadPrefs();
+ }
+ 
++void SpectrogramSettings::ResetPreferencesCache()
++{
++   SpectrumAlgorithm.Invalidate();
++   SpectrumEnableSelection.Invalidate();
++   SpectrumFFTSize.Invalidate();
++   SpectrumFrequencyGain.Invalidate();
++   SpectrumGain.Invalidate();
++   SpectrumGrayscale.Invalidate();
++   SpectrumMaxFreq.Invalidate();
++   SpectrumMinFreq.Invalidate();
++   SpectrumRange.Invalidate();
++   SpectrumScale.Invalidate();
++   SpectrumWindowFunction.Invalidate();
++   SpectrumZeroPaddingFactor.Invalidate();
++   
++   defaults().LoadPrefs();
++}
++
+ SpectrogramSettings::SpectrogramSettings(const SpectrogramSettings &other)
+    : minFreq(other.minFreq)
+    , maxFreq(other.maxFreq)
+diff --git a/libraries/lib-wave-track-settings/SpectrogramSettings.h b/libraries/lib-wave-track-settings/SpectrogramSettings.h
+index d898c0992c5..62fe1c625ab 100644
+--- a/libraries/lib-wave-track-settings/SpectrogramSettings.h
++++ b/libraries/lib-wave-track-settings/SpectrogramSettings.h
+@@ -96,6 +96,8 @@ class WAVE_TRACK_SETTINGS_API SpectrogramSettings
+    SpectrogramSettings& operator= (const SpectrogramSettings &other);
+    ~SpectrogramSettings();
+ 
++   static void ResetPreferencesCache();
++
+    PointerType Clone() const override;
+ 
+    bool IsDefault() const
+@@ -114,6 +116,7 @@ class WAVE_TRACK_SETTINGS_API SpectrogramSettings
+    void CacheWindows();
+    void ConvertToEnumeratedWindowSizes();
+    void ConvertToActualWindowSizes();
++   
+ 
+    // Need to be told what the bin unit is, as this structure does not know
+    // the rate
+diff --git a/src/menus/PluginMenus.cpp b/src/menus/PluginMenus.cpp
+index 981686fb0f2..426023b00e5 100644
+--- a/src/menus/PluginMenus.cpp
++++ b/src/menus/PluginMenus.cpp
+@@ -33,7 +33,7 @@
+ #include "prefs/EffectsPrefs.h"
+ #include "DoEffect.h"
+ #include "prefs/GUIPrefs.h"
+-
++#include "prefs/SpectrumPrefs.h"
+ // private helper classes and functions
+ namespace {
+ 
+@@ -81,6 +81,9 @@ void OnResetConfig(const CommandContext &context)
+ 
+    ResetPreferences();
+ 
++   //cache was not being invalided resulting in no reset to default.
++   SpectrogramSettings::ResetPreferencesCache();
++
+    // Directory will be reset on next restart.
+    FileNames::UpdateDefaultPath(FileNames::Operation::Temp, TempDirectory::DefaultTempDir());
+ 
+@@ -96,6 +99,7 @@ void OnResetConfig(const CommandContext &context)
+    SyncLockTracks.Reset();
+    SoundActivatedRecord.Reset();
+    SelectionToolbarMode.Reset();
++   
+ 
+    ShowRMSPref().Reset();
+    ShowClippingPref().Reset();
+
+From d63e8b09f1141e8d98da6568ead723d8acaabe13 Mon Sep 17 00:00:00 2001
+From: NastyChopSticks <kaden.metzger@gmail.com>
+Date: Wed, 14 Oct 2026 17:54:18 -0700
+Subject: [PATCH 3/4] fixed comment typo
+
+---
+ src/menus/PluginMenus.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/menus/PluginMenus.cpp b/src/menus/PluginMenus.cpp
+index 426023b00e5..d56464d7786 100644
+--- a/src/menus/PluginMenus.cpp
++++ b/src/menus/PluginMenus.cpp
+@@ -81,7 +81,7 @@ void OnResetConfig(const CommandContext &context)
+ 
+    ResetPreferences();
+ 
+-   //cache was not being invalided resulting in no reset to default.
++   //cache was not being invalidated resulting in no reset to default.
+    SpectrogramSettings::ResetPreferencesCache();
+ 
+    // Directory will be reset on next restart.
+
+From 3e704a2dd7290f3c4fece522c4820097f3dacaae Mon Sep 17 00:00:00 2001
+From: NastyChopSticks <kaden.metzger@gmail.com>
+Date: Wed, 14 Oct 2026 17:55:17 -0700
+Subject: [PATCH 4/4] expanded on bug fix comment
+
+---
+ src/menus/PluginMenus.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/menus/PluginMenus.cpp b/src/menus/PluginMenus.cpp
+index d56464d7786..ebae8b0f433 100644
+--- a/src/menus/PluginMenus.cpp
++++ b/src/menus/PluginMenus.cpp
+@@ -81,7 +81,7 @@ void OnResetConfig(const CommandContext &context)
+ 
+    ResetPreferences();
+ 
+-   //cache was not being invalidated resulting in no reset to default.
++   //Bug fix: cache was not being invalidated resulting in no reset to default. This method invalidates the cache when reseting
+    SpectrogramSettings::ResetPreferencesCache();
+ 
+    // Directory will be reset on next restart.

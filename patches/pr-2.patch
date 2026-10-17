@@ -1,0 +1,25 @@
+From 2db2e105f1ebfe75ecdbfdf949e90e379d2a0083 Mon Sep 17 00:00:00 2001
+From: BrianLeung123 <bleung0112@gmail.com>
+Date: Thu, 24 Sep 2026 18:32:23 -0700
+Subject: [PATCH] Fix wave clip handle behavior
+
+---
+ .../wavetrack/ui/WaveClipAdjustBorderHandle.cpp              | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/tracks/playabletrack/wavetrack/ui/WaveClipAdjustBorderHandle.cpp b/src/tracks/playabletrack/wavetrack/ui/WaveClipAdjustBorderHandle.cpp
+index 64dcbbe61a2..57e9c6926ff 100644
+--- a/src/tracks/playabletrack/wavetrack/ui/WaveClipAdjustBorderHandle.cpp
++++ b/src/tracks/playabletrack/wavetrack/ui/WaveClipAdjustBorderHandle.cpp
+@@ -398,6 +398,11 @@ UIHandlePtr WaveClipAdjustBorderHandle::HitAnywhere(
+          continue;
+ 
+       auto clipRect = ClipParameters::GetClipRect(clip, zoomInfo, rect);
++
++      //Skip clips that are under 10px
++      if (clipRect.GetWidth() < 10)
++         continue;
++         
+       if(std::abs(px - clipRect.GetLeft()) <= BoundaryThreshold * 2)
+          rightInterval = interval;
+       else if (std::abs(px - clipRect.GetRight()) <= BoundaryThreshold * 2)

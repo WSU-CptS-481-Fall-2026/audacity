@@ -1,0 +1,268 @@
+From 88519dfd0d924cb67bcc8c2f04fad333926145eb Mon Sep 17 00:00:00 2001
+From: BrianLeung123 <bleung0112@gmail.com>
+Date: Wed, 30 Sep 2026 20:05:28 -0700
+Subject: [PATCH] Fix audio.com account link menu state
+
+---
+ .../appshell/qml/PublishPage/PublishPage.qml  | 23 ++++++
+ .../lib-cloud-audiocom/LinkAccountMenuState.h | 36 +++++++++
+ .../lib-cloud-audiocom/tests/CMakeLists.txt   | 14 ++++
+ .../tests/LinkAccountMenuStateTests.cpp       | 76 +++++++++++++++++++
+ .../ui/dialogs/LinkWithTokenDialog.cpp        | 53 +++++++++++--
+ 5 files changed, 194 insertions(+), 8 deletions(-)
+ create mode 100644 libraries/lib-cloud-audiocom/LinkAccountMenuState.h
+ create mode 100644 libraries/lib-cloud-audiocom/tests/CMakeLists.txt
+ create mode 100644 libraries/lib-cloud-audiocom/tests/LinkAccountMenuStateTests.cpp
+
+diff --git a/au4/src/appshell/qml/PublishPage/PublishPage.qml b/au4/src/appshell/qml/PublishPage/PublishPage.qml
+index dc22afd597e..1b3ef986e55 100644
+--- a/au4/src/appshell/qml/PublishPage/PublishPage.qml
++++ b/au4/src/appshell/qml/PublishPage/PublishPage.qml
+@@ -34,8 +34,31 @@ DockPage {
+ 
+     property var topToolKeyNavSec
+ 
++    mainToolBars: [
++        DockToolBar {
++            id: publishToolBar
++
++            objectName: "PublishToolBar"
++            title: qsTrc("appshell", "Publish toolbar")
++
++            floatable: false
++            closable: false
++            resizable: false
++            separatorsVisible: false
++
++            alignment: DockToolBarAlignment.Center
++            contentBottomPadding: 2
++
++            PublishToolBar {
++                navigationPanel.section: root.topToolKeyNavSec
++                navigationPanel.order: 2
++            }
++        }
++    ]
++
+     central: Text {
+         text: "Publish"
+     }
++}
+ 
+ }
+diff --git a/libraries/lib-cloud-audiocom/LinkAccountMenuState.h b/libraries/lib-cloud-audiocom/LinkAccountMenuState.h
+new file mode 100644
+index 00000000000..83050222b5c
+--- /dev/null
++++ b/libraries/lib-cloud-audiocom/LinkAccountMenuState.h
+@@ -0,0 +1,36 @@
++/*  SPDX-License-Identifier: GPL-2.0-or-later */
++/*!********************************************************************
++
++  Audacity: A Digital Audio Editor
++
++  LinkAccountMenuState.h
++
++  Decides what the "Help > Link audio.com account..." menu entry shows
++  and does, depending on whether the account is already linked.
++
++**********************************************************************/
++#pragma once
++
++#include "Internat.h"
++#include "TranslatableString.h"
++
++namespace audacity::cloud::audiocom
++{
++enum class LinkAccountAction
++{
++   ShowLinkDialog,
++   Unlink,
++};
++
++inline LinkAccountAction GetLinkAccountAction(bool accountLinked)
++{
++   return accountLinked ? LinkAccountAction::Unlink
++                        : LinkAccountAction::ShowLinkDialog;
++}
++
++inline TranslatableString GetLinkAccountLabel(bool accountLinked)
++{
++   return accountLinked ? XXO("&Unlink audio.com account...")
++                        : XXO("L&ink audio.com account...");
++}
++}
+diff --git a/libraries/lib-cloud-audiocom/tests/CMakeLists.txt b/libraries/lib-cloud-audiocom/tests/CMakeLists.txt
+new file mode 100644
+index 00000000000..2eb928b6eab
+--- /dev/null
++++ b/libraries/lib-cloud-audiocom/tests/CMakeLists.txt
+@@ -0,0 +1,14 @@
++#[[
++Unit tests for lib-cloud-audiocom
++]]
++
++add_unit_test(
++   NAME
++      lib-cloud-audiocom
++   MOCK_PREFS
++   SOURCES
++      LinkAccountMenuStateTests.cpp
++   LIBRARIES
++      lib-cloud-audiocom-interface
++      lib-import-export-interface
++)
+diff --git a/libraries/lib-cloud-audiocom/tests/LinkAccountMenuStateTests.cpp b/libraries/lib-cloud-audiocom/tests/LinkAccountMenuStateTests.cpp
+new file mode 100644
+index 00000000000..7d4fc207f5b
+--- /dev/null
++++ b/libraries/lib-cloud-audiocom/tests/LinkAccountMenuStateTests.cpp
+@@ -0,0 +1,76 @@
++/*  SPDX-License-Identifier: GPL-2.0-or-later */
++/*!********************************************************************
++
++  Audacity: A Digital Audio Editor
++
++  LinkAccountMenuStateTests.cpp
++
++**********************************************************************/
++#include "LinkAccountMenuState.h"
++#include "ExportUtils.h"
++#include "OAuthService.h"
++#include "MockedPrefs.h"
++
++#include <catch2/catch.hpp>
++
++using namespace audacity::cloud::audiocom;
++
++TEST_CASE("LinkAccountMenuState")
++{
++   SECTION("Not linked: entry offers to link")
++   {
++      REQUIRE(GetLinkAccountAction(false) == LinkAccountAction::ShowLinkDialog);
++      REQUIRE(
++         GetLinkAccountLabel(false).MSGID().GET() ==
++         "L&ink audio.com account...");
++   }
++
++   SECTION("Linked: entry offers to unlink")
++   {
++      REQUIRE(GetLinkAccountAction(true) == LinkAccountAction::Unlink);
++      REQUIRE(
++         GetLinkAccountLabel(true).MSGID().GET() ==
++         "&Unlink audio.com account...");
++   }
++
++   SECTION("Label differs between the two states")
++   {
++      REQUIRE(
++         GetLinkAccountLabel(true).MSGID() != GetLinkAccountLabel(false).MSGID());
++   }
++}
++
++TEST_CASE("LinkAccountMenuState follows OAuthService")
++{
++   MockedPrefs mockedPrefs;
++   OAuthService service;
++
++   SECTION("A fresh service is not linked")
++   {
++      REQUIRE_FALSE(service.HasAccessToken());
++      REQUIRE(
++         GetLinkAccountAction(service.HasAccessToken()) ==
++         LinkAccountAction::ShowLinkDialog);
++   }
++
++   SECTION("Unlinking notifies subscribers, so the menu label can refresh")
++   {
++      int notifications = 0;
++      bool authorised = true;
++      auto subscription =
++         service.Subscribe([&](const AuthStateChangedMessage& message) {
++            ++notifications;
++            authorised = message.authorised;
++         });
++
++      service.UnlinkAccount(AudiocomTrace::LinkAudiocomAccountHelpMenu);
++
++      REQUIRE(notifications == 1);
++      REQUIRE_FALSE(authorised);
++      REQUIRE_FALSE(service.HasAccessToken());
++      REQUIRE_FALSE(service.HasRefreshToken());
++      REQUIRE(
++         GetLinkAccountAction(service.HasAccessToken()) ==
++         LinkAccountAction::ShowLinkDialog);
++   }
++}
+diff --git a/modules/sharing/mod-cloud-audiocom/ui/dialogs/LinkWithTokenDialog.cpp b/modules/sharing/mod-cloud-audiocom/ui/dialogs/LinkWithTokenDialog.cpp
+index 75aa2e87cdf..98fb3e0aaf1 100644
+--- a/modules/sharing/mod-cloud-audiocom/ui/dialogs/LinkWithTokenDialog.cpp
++++ b/modules/sharing/mod-cloud-audiocom/ui/dialogs/LinkWithTokenDialog.cpp
+@@ -147,22 +147,59 @@ void LinkWithTokenDialog::OnTextChanged()
+ // Remaining code hooks this add-on into the application
+ #include "CommandContext.h"
+ #include "MenuRegistry.h"
++#include "ProjectWindows.h"
++#include "CommandManager.h"
++#include "Project.h"
++#include "LinkAccountMenuState.h"
+ 
+ namespace {
+ // Define our extra menu item
+-void OnLinkAccount(const CommandContext&)
++void OnLinkAccount(const CommandContext& context)
+ {
+-   audacity::cloud::audiocom::LinkWithTokenDialog dialog {
+-      AudiocomTrace::LinkAudiocomAccountHelpMenu
+-   };
+-   dialog.ShowModal();
++   auto& oauthService = audacity::cloud::audiocom::GetOAuthService();
++   
++   if (
++      audacity::cloud::audiocom::GetLinkAccountAction(
++         oauthService.HasAccessToken())
++      == audacity::cloud::audiocom::LinkAccountAction::Unlink)
++   {
++      // Account is already linked, unlink it
++      oauthService.UnlinkAccount(AudiocomTrace::LinkAudiocomAccountHelpMenu);
++   }
++   else
++   {
++      // Account is not linked, show the link dialog
++      auto frame = FindProjectFrame(&context.project);
++      audacity::cloud::audiocom::LinkWithTokenDialog dialog {
++         AudiocomTrace::LinkAudiocomAccountHelpMenu,
++         frame
++      };
++      dialog.ShowModal();
++   }
+ }
+ 
++TranslatableString GetLinkAccountLabel()
++{
++   return audacity::cloud::audiocom::GetLinkAccountLabel(audacity::cloud::audiocom::GetOAuthService().HasAccessToken());
++}
++
++void UpdateLinkAccountLabels()
++{
++   for (auto pProject : AllProjects {})
++      CommandManager::Get(*pProject)
++         .Modify(wxT("LinkAccount"), GetLinkAccountLabel());
++}
++
++// Keep the menu label in sync with the account state
++Observer::Subscription sAuthStateSubscription =
++   audacity::cloud::audiocom::GetOAuthService().Subscribe(
++      [](const auto&) { UpdateLinkAccountLabels(); });
++
+ using namespace MenuRegistry;
+ AttachedItem sAttachment{
+-      Command(
+-         wxT("LinkAccount"), XXO("L&ink audio.com account..."),
+-         OnLinkAccount, AlwaysEnabledFlag),
++   Command(
++      wxT("LinkAccount"), XXO("L&ink audio.com account..."),
++      OnLinkAccount, AlwaysEnabledFlag),
+    Placement{ wxT("Help/Extra"), { OrderingHint::Begin } }
+ };
+ }

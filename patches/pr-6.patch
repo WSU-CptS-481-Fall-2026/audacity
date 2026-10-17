@@ -1,0 +1,31 @@
+From 17df21338a150c5ae3f26149084a0048683f3d15 Mon Sep 17 00:00:00 2001
+From: Travis Takushi <travis.takushi@wsu.edu>
+Date: Mon, 12 Oct 2026 18:55:17 -0700
+Subject: [PATCH] Group clip commands together in the clip context menu (#4235)
+
+Move Mute/Unmute Track below the clip commands, separated by a divider,
+so Split, Join, Rename and Pitch and Speed form one group as requested
+in upstream issue #4235. Also remove a stray empty statement.
+---
+ .../playabletrack/wavetrack/ui/WaveClipUIUtilities.cpp       | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/src/tracks/playabletrack/wavetrack/ui/WaveClipUIUtilities.cpp b/src/tracks/playabletrack/wavetrack/ui/WaveClipUIUtilities.cpp
+index 6d999f85235..08f5ec29e81 100644
+--- a/src/tracks/playabletrack/wavetrack/ui/WaveClipUIUtilities.cpp
++++ b/src/tracks/playabletrack/wavetrack/ui/WaveClipUIUtilities.cpp
+@@ -85,11 +85,12 @@ WaveClipUIUtilities::GetWaveClipMenuItems()
+       {},
+       { L"Split", XO("Split Clip") },
+       { L"Join", XO("Join Clips") },
+-      { L"TrackMute", XO("Mute/Unmute Track") },
+-      {},
+       { L"RenameClip", XO("Rename Clip...") },
++      {},
+       { L"ChangePitchAndSpeed", XO("Pitch and Speed...") },
+       { L"RenderPitchAndSpeed", XO("Render Pitch and Speed") },
++      {},
++      { L"TrackMute", XO("Mute/Unmute Track") },
+    };
+    ;
+ }

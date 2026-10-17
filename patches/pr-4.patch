@@ -1,0 +1,51 @@
+From 731562021d7b126b88a84eed16c7073d26e30419 Mon Sep 17 00:00:00 2001
+From: Travis Takushi <travis.takushi@wsu.edu>
+Date: Tue, 29 Sep 2026 21:53:53 -0700
+Subject: [PATCH] Fix FFmpeg codec ID lookup returning FIRST_AUDIO marker for
+ pcm_s16le
+
+GetAudacityCodecID() returned the first Audacity codec ID whose FFmpeg
+ID matched. FFmpeg's AV_CODEC_ID_FIRST_AUDIO marker has the same value as
+AV_CODEC_ID_PCM_S16LE and comes first in Audacity's list, so pcm_s16le
+was reported as FIRST_AUDIO. Custom FFmpeg Export then rejected
+pcm_s16le in every format as 'not compatible'.
+---
+ .../import-export/mod-ffmpeg/ExportFFmpegOptions.cpp  |  1 +
+ .../lib-ffmpeg-support/impl/AVCodecIDLookup.inl       | 11 +++++++++--
+ 2 files changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/modules/import-export/mod-ffmpeg/ExportFFmpegOptions.cpp b/modules/import-export/mod-ffmpeg/ExportFFmpegOptions.cpp
+index 45ecc8c7383..aea4637f125 100644
+--- a/modules/import-export/mod-ffmpeg/ExportFFmpegOptions.cpp
++++ b/modules/import-export/mod-ffmpeg/ExportFFmpegOptions.cpp
+@@ -1165,6 +1165,7 @@ bool ExportFFmpegOptions::ReportIfBadCombination()
+    // However, the list updating now seems to be working correctly
+    // making it impossible to select illegal combinations
+    bool bFound = false;
++
+    for (int i = 0; CompatibilityList[i].fmt != NULL; i++)
+    {
+       if (*selfmt == CompatibilityList[i].fmt)
+diff --git a/modules/import-export/mod-ffmpeg/lib-ffmpeg-support/impl/AVCodecIDLookup.inl b/modules/import-export/mod-ffmpeg/lib-ffmpeg-support/impl/AVCodecIDLookup.inl
+index e572cd77b68..52510ef3948 100644
+--- a/modules/import-export/mod-ffmpeg/lib-ffmpeg-support/impl/AVCodecIDLookup.inl
++++ b/modules/import-export/mod-ffmpeg/lib-ffmpeg-support/impl/AVCodecIDLookup.inl
+@@ -435,9 +435,16 @@ AVCodecIDFwd GetAVCodeID(AudacityAVCodecID codecID)
+ 
+ AudacityAVCodecID GetAudacityCodecID(AVCodecIDFwd codecID)
+ {
+-   for (int id = AUDACITY_AV_CODEC_ID_NONE;
+-        id < AUDACITY_AV_CODEC_ID_LAST; ++id)
++   for (int id = AUDACITY_AV_CODEC_ID_NONE; id < AUDACITY_AV_CODEC_ID_LAST; ++id)
+    {
++      // FFmpeg's FIRST_* values are range markers that share their numeric
++      // value with a real codec (e.g. FIRST_AUDIO == PCM_S16LE). Skip them,
++      // so the real codec is returned instead of the marker.
++      if (id == AUDACITY_AV_CODEC_ID_FIRST_AUDIO ||
++         id == AUDACITY_AV_CODEC_ID_FIRST_SUBTITLE ||
++         id == AUDACITY_AV_CODEC_ID_FIRST_UNKNOWN)
++         continue;
++
+       if (AVCodecIDLookup[id] == codecID)
+          return static_cast<AudacityAVCodecIDValue>(id);
+    }
