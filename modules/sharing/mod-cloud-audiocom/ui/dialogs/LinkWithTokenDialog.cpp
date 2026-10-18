@@ -147,22 +147,59 @@ void LinkWithTokenDialog::OnTextChanged()
 // Remaining code hooks this add-on into the application
 #include "CommandContext.h"
 #include "MenuRegistry.h"
+#include "ProjectWindows.h"
+#include "CommandManager.h"
+#include "Project.h"
+#include "LinkAccountMenuState.h"
 
 namespace {
 // Define our extra menu item
-void OnLinkAccount(const CommandContext&)
+void OnLinkAccount(const CommandContext& context)
 {
-   audacity::cloud::audiocom::LinkWithTokenDialog dialog {
-      AudiocomTrace::LinkAudiocomAccountHelpMenu
-   };
-   dialog.ShowModal();
+   auto& oauthService = audacity::cloud::audiocom::GetOAuthService();
+   
+   if (
+      audacity::cloud::audiocom::GetLinkAccountAction(
+         oauthService.HasAccessToken())
+      == audacity::cloud::audiocom::LinkAccountAction::Unlink)
+   {
+      // Account is already linked, unlink it
+      oauthService.UnlinkAccount(AudiocomTrace::LinkAudiocomAccountHelpMenu);
+   }
+   else
+   {
+      // Account is not linked, show the link dialog
+      auto frame = FindProjectFrame(&context.project);
+      audacity::cloud::audiocom::LinkWithTokenDialog dialog {
+         AudiocomTrace::LinkAudiocomAccountHelpMenu,
+         frame
+      };
+      dialog.ShowModal();
+   }
 }
+
+TranslatableString GetLinkAccountLabel()
+{
+   return audacity::cloud::audiocom::GetLinkAccountLabel(audacity::cloud::audiocom::GetOAuthService().HasAccessToken());
+}
+
+void UpdateLinkAccountLabels()
+{
+   for (auto pProject : AllProjects {})
+      CommandManager::Get(*pProject)
+         .Modify(wxT("LinkAccount"), GetLinkAccountLabel());
+}
+
+// Keep the menu label in sync with the account state
+Observer::Subscription sAuthStateSubscription =
+   audacity::cloud::audiocom::GetOAuthService().Subscribe(
+      [](const auto&) { UpdateLinkAccountLabels(); });
 
 using namespace MenuRegistry;
 AttachedItem sAttachment{
-      Command(
-         wxT("LinkAccount"), XXO("L&ink audio.com account..."),
-         OnLinkAccount, AlwaysEnabledFlag),
+   Command(
+      wxT("LinkAccount"), XXO("L&ink audio.com account..."),
+      OnLinkAccount, AlwaysEnabledFlag),
    Placement{ wxT("Help/Extra"), { OrderingHint::Begin } }
 };
 }
