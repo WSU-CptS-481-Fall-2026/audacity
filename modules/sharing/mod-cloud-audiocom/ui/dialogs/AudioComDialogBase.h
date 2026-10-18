@@ -21,6 +21,7 @@
 class AudacityProject;
 
 class wxBoxSizer;
+class wxButton;
 
 namespace audacity::cloud::audiocom::sync
 {
@@ -82,6 +83,7 @@ private:
 
    wxBoxSizer* mDialogSizer;
    wxBoxSizer* mButtonSizer;
+   wxButton* mDefaultButton{};
 
    DialogButtonIdentifier mEscButtonIdentifier { CancelButtonIdentifier() };
    DialogButtonIdentifier mResultButtonIdentifier;
