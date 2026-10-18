@@ -184,7 +184,7 @@ bool NumericEditor::EndEdit(int WXUNUSED(row), int WXUNUSED(col), const wxGrid *
    bool changed = newtime != mOld;
 
    if (changed) {
-      mValueAsString = wxString::Format(wxT("%g"), newtime);
+      mValueAsString = wxString::Format(wxT("%.9g"), newtime);
       *newval = mValueAsString;
    }
 
