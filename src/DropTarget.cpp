@@ -13,8 +13,12 @@
 #include <wx/dnd.h>
 
 #include "AudacityException.h"
+#include "AudioIO.h"
 #include "FileNames.h"
+#include "PlaybackRestart.h"
 #include "Project.h"
+#include "ProjectAudioIO.h"
+#include "ProjectAudioManager.h"
 #include "ProjectFileManager.h"
 #include "TrackPanel.h"
 
@@ -44,6 +48,33 @@ public:
       return false;
    }
 };
+
+namespace {
+class ProjectPlaybackRestartHost final : public PlaybackRestartHost
+{
+public:
+   explicit ProjectPlaybackRestartHost(AudacityProject& project)
+      : mProject{ project }
+      , mManager{ ProjectAudioManager::Get(project) }
+   {}
+   bool Playing() const override { return mManager.Playing(); }
+   bool Paused() const override { return AudioIO::Get()->IsPaused(); }
+   bool Looping() const override { return mManager.Looping(); }
+   double StreamTime() const override { return AudioIO::Get()->GetStreamTime(); }
+   void Stop() override { mManager.Stop(); }
+   void Play(double startTime, bool looping) override
+   {
+      auto options = ProjectAudioIO::GetDefaultOptions(mProject, looping);
+      options.pStartTime.emplace(startTime);
+      mManager.PlayPlayRegion(
+         SelectedRegion(startTime, startTime), options,
+         looping ? PlayMode::loopedPlay : PlayMode::normalPlay);
+   }
+private:
+   AudacityProject& mProject;
+   ProjectAudioManager& mManager;
+};
+} // namespace
 
 class DropTarget final : public wxFileDropTarget
 {
@@ -156,8 +187,14 @@ public:
    {
       // Experiment shows that this function can be reached while there is no
       // catch block above in wxWidgets.  So stop all exceptions here.
-      return GuardedCall<bool>(
-         [&] { return ProjectFileManager::Get(*mProject).Import(filenames); });
+      return GuardedCall<bool>([&] {
+         // Playback uses a snapshot of the tracks taken when it started, so
+         // to hear the dropped files, restart playback from where it was.
+         ProjectPlaybackRestartHost host{ *mProject };
+         return RestartPlaybackAfter(host, [&] {
+            return ProjectFileManager::Get(*mProject).Import(filenames);
+         });
+      });
    }
 
 private:
