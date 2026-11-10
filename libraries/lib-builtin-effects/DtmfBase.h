@@ -95,7 +95,7 @@ public:
 private:
    // DtmfBase implementation
 
-   static bool MakeDtmfTone(
+   static void MakeDtmfTone(
       float* buffer, size_t len, float fs, wxChar tone, sampleCount last,
       sampleCount total, float amplitude);
 
