@@ -65,10 +65,22 @@ public:
    bool Show( bool show = true ) override;
 
 private:
+   struct XAxisParams {
+      float xMin;
+      float xMax;
+      float xStep;
+   };
+   struct YAxisParams {
+      float yMin;
+      float yMax;
+      float yTotal;
+   };
+
    void Populate();
 
    void PlotMouseEvent(wxMouseEvent & event);
    void PlotPaint(wxPaintEvent & event);
+   void PrintCursorInfo(float xPos, float bestPeak, float bestValue, float value);
 
    void OnCloseWindow(wxCloseEvent & event);
    void OnCloseButton(wxCommandEvent & event);
@@ -87,8 +99,15 @@ private:
 
    void SendRecalcEvent();
    void Recalc();
+   void DrawEmptyPlot();
    void DrawPlot();
+   void StageRulerYAxis(float yMax, float yMin);
+   
+   XAxisParams CalculateXAxisParams(int width);
+   YAxisParams CalculateYAxisParams();
+   void StageRulerXAxis(XAxisParams params);
    void DrawBackground(wxMemoryDC & dc);
+   void DrawPlotData(XAxisParams params1, YAxisParams params2, wxRect r, wxMemoryDC& memDC);
 
    // PrefsListener implementation
    void UpdatePrefs() override;
