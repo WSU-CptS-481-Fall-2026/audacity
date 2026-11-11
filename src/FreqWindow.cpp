@@ -775,7 +775,9 @@ void FrequencyPlotDialog::DrawPlot()
 
    wxRect r = mPlotRect;
    int width = r.width - 2;
-   XAxisParams xParams = CalculateXAxisParams(width);
+
+   
+   
    YAxisParams yParams = CalculateYAxisParams();
 
    //set up y axis for ruler
@@ -788,7 +790,7 @@ void FrequencyPlotDialog::DrawPlot()
    //
    // Must be done after setting the vertical ruler above since the
    // the width could change.
-   
+   XAxisParams xParams = CalculateXAxisParams(width);
 
    // Set up x axis ruler
    
