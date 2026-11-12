@@ -54,7 +54,7 @@ LinkWithTokenDialog::LinkWithTokenDialog(AudiocomTrace trace, wxWindow* parent)
             const auto audioComLink = safenew HyperLink(
                s.GetParent(),
                wxID_ANY,
-               _("Sign-in and get the token"),
+               XO("Sign-in and get the token").Translation(),
                GetServiceConfig().GetOAuthLoginPage(mAudiocomTrace));
             s.AddWindow(audioComLink);
 
