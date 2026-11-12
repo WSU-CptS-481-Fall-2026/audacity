@@ -6,6 +6,7 @@ set( TARGET mod-cloud-audiocom )
 
 set( SOURCES
    menus/AudioComMenus.cpp
+   menus/LinkAccountMenu.cpp
 
    ui/images/CloudImages.cpp
    ui/images/CloudImages.hpp
