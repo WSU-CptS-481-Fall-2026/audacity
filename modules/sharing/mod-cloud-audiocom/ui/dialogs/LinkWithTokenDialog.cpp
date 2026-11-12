@@ -31,9 +31,21 @@
 
 namespace audacity::cloud::audiocom
 {
+namespace
+{
+// Layout of the dialog, in pixels unless stated otherwise
+constexpr int kDialogWidth = 480;
+constexpr int kPanelBorder = 16;
+constexpr int kLabelLinkGap = 30;
+constexpr int kTokenTopGap = 4;
+constexpr int kTokenBoxChars = 60; // width of the token box, in characters
+constexpr int kTokenBottomGap = 16;
+constexpr int kSeparatorBottomGap = 10;
+} // namespace
+
 LinkWithTokenDialog::LinkWithTokenDialog(AudiocomTrace trace, wxWindow* parent)
     : wxDialogWrapper(
-         parent, wxID_ANY, XO("Link account"), wxDefaultPosition, { 480, -1 },
+         parent, wxID_ANY, XO("Link account"), wxDefaultPosition, { kDialogWidth, -1 },
          wxDEFAULT_DIALOG_STYLE)
     , mAudiocomTrace(trace)
 {
@@ -43,13 +55,13 @@ LinkWithTokenDialog::LinkWithTokenDialog(AudiocomTrace trace, wxWindow* parent)
 
    s.StartVerticalLay();
    {
-      s.StartInvisiblePanel(16);
+      s.StartInvisiblePanel(kPanelBorder);
       {
          s.SetBorder(0);
          s.StartHorizontalLay(wxEXPAND, 0);
             s.AddFixedText(XO("Enter token to link your account"));
 
-            s.AddSpace(30, 0, 1);
+            s.AddSpace(kLabelLinkGap, 0, 1);
 
             const auto audioComLink = safenew HyperLink(
                s.GetParent(),
@@ -60,17 +72,17 @@ LinkWithTokenDialog::LinkWithTokenDialog(AudiocomTrace trace, wxWindow* parent)
 
          s.EndHorizontalLay();
 
-         s.AddSpace(0, 4, 0);
+         s.AddSpace(0, kTokenTopGap, 0);
 
-         mToken = s.AddTextBox(TranslatableString {}, {}, 60);
+         mToken = s.AddTextBox(TranslatableString {}, {}, kTokenBoxChars);
          mToken->SetName(XO("Token").Translation());
          mToken->Bind(wxEVT_TEXT, [this](auto) { OnTextChanged(); });
 
-         s.AddSpace(0, 16, 0);
+         s.AddSpace(0, kTokenBottomGap, 0);
 
          s.AddWindow(safenew wxStaticLine { s.GetParent() }, wxEXPAND);
 
-         s.AddSpace(0, 10, 0);
+         s.AddSpace(0, kSeparatorBottomGap, 0);
 
          s.StartHorizontalLay(wxEXPAND, 0);
          {
