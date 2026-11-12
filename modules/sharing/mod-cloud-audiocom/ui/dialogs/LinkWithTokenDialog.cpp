@@ -3,7 +3,7 @@
 
   Audacity: A Digital Audio Editor
 
-  LinkAccountDialog.cpp
+  LinkWithTokenDialog.cpp
 
   Dmitry Vedenko
 
@@ -29,6 +29,14 @@
 #include "LinkSucceededDialog.h"
 #include "HyperLink.h"
 
+// Used by the code that hooks this add-on into the application, at the end
+#include "CommandContext.h"
+#include "MenuRegistry.h"
+#include "ProjectWindows.h"
+#include "CommandManager.h"
+#include "Project.h"
+#include "LinkAccountMenuState.h"
+
 namespace audacity::cloud::audiocom
 {
 LinkWithTokenDialog::LinkWithTokenDialog(AudiocomTrace trace, wxWindow* parent)
@@ -48,16 +56,16 @@ LinkWithTokenDialog::LinkWithTokenDialog(AudiocomTrace trace, wxWindow* parent)
          s.SetBorder(0);
          s.StartHorizontalLay(wxEXPAND, 0);
             s.AddFixedText(XO("Enter token to link your account"));
-         
+
             s.AddSpace(30, 0, 1);
-         
+
             const auto audioComLink = safenew HyperLink(
                s.GetParent(),
                wxID_ANY,
                _("Sign-in and get the token"),
                GetServiceConfig().GetOAuthLoginPage(mAudiocomTrace));
             s.AddWindow(audioComLink);
-         
+
          s.EndHorizontalLay();
 
          s.AddSpace(0, 4, 0);
@@ -145,19 +153,12 @@ void LinkWithTokenDialog::OnTextChanged()
 } // namespace audacity::cloud::audiocom
 
 // Remaining code hooks this add-on into the application
-#include "CommandContext.h"
-#include "MenuRegistry.h"
-#include "ProjectWindows.h"
-#include "CommandManager.h"
-#include "Project.h"
-#include "LinkAccountMenuState.h"
-
 namespace {
 // Define our extra menu item
 void OnLinkAccount(const CommandContext& context)
 {
    auto& oauthService = audacity::cloud::audiocom::GetOAuthService();
-   
+
    if (
       audacity::cloud::audiocom::GetLinkAccountAction(
          oauthService.HasAccessToken())

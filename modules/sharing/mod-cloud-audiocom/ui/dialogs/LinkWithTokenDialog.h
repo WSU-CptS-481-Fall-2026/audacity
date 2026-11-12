@@ -3,7 +3,7 @@
 
   Audacity: A Digital Audio Editor
 
-  LinkAccountDialog.h
+  LinkWithTokenDialog.h
 
   Dmitry Vedenko
 
