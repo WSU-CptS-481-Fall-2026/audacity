@@ -45,12 +45,23 @@ constexpr int kSeparatorBottomGap = 10;
 
 LinkWithTokenDialog::LinkWithTokenDialog(AudiocomTrace trace, wxWindow* parent)
     : wxDialogWrapper(
-         parent, wxID_ANY, XO("Link account"), wxDefaultPosition, { kDialogWidth, -1 },
-         wxDEFAULT_DIALOG_STYLE)
+         parent, wxID_ANY, XO("Link account"), wxDefaultPosition,
+         { kDialogWidth, -1 }, wxDEFAULT_DIALOG_STYLE)
     , mAudiocomTrace(trace)
 {
    GetAuthorizationHandler().PushSuppressDialogs();
 
+   BuildUI();
+
+   Layout();
+   Fit();
+   Centre();
+
+   mToken->SetFocus();
+}
+
+void LinkWithTokenDialog::BuildUI()
+{
    ShuttleGui s(this, eIsCreating);
 
    s.StartVerticalLay();
@@ -58,25 +69,12 @@ LinkWithTokenDialog::LinkWithTokenDialog(AudiocomTrace trace, wxWindow* parent)
       s.StartInvisiblePanel(kPanelBorder);
       {
          s.SetBorder(0);
-         s.StartHorizontalLay(wxEXPAND, 0);
-            s.AddFixedText(XO("Enter token to link your account"));
 
-            s.AddSpace(kLabelLinkGap, 0, 1);
-
-            const auto audioComLink = safenew HyperLink(
-               s.GetParent(),
-               wxID_ANY,
-               XO("Sign-in and get the token").Translation(),
-               GetServiceConfig().GetOAuthLoginPage(mAudiocomTrace));
-            s.AddWindow(audioComLink);
-
-         s.EndHorizontalLay();
+         BuildHeaderRow(s);
 
          s.AddSpace(0, kTokenTopGap, 0);
 
-         mToken = s.AddTextBox(TranslatableString {}, {}, kTokenBoxChars);
-         mToken->SetName(XO("Token").Translation());
-         mToken->Bind(wxEVT_TEXT, [this](auto) { OnTextChanged(); });
+         BuildTokenBox(s);
 
          s.AddSpace(0, kTokenBottomGap, 0);
 
@@ -84,28 +82,52 @@ LinkWithTokenDialog::LinkWithTokenDialog(AudiocomTrace trace, wxWindow* parent)
 
          s.AddSpace(0, kSeparatorBottomGap, 0);
 
-         s.StartHorizontalLay(wxEXPAND, 0);
-         {
-            s.AddSpace(0, 0, 1);
-
-            s.AddButton(XXO("&Cancel"))
-               ->Bind(wxEVT_BUTTON, [this](auto) { Close(); });
-
-            mContinueButton = s.AddButton(XXO("C&ontinue"));
-            mContinueButton->Disable();
-            mContinueButton->Bind(wxEVT_BUTTON, [this](auto) { OnContinue(); });
-         }
-         s.EndHorizontalLay();
+         BuildButtonRow(s);
       }
       s.EndInvisiblePanel();
    }
    s.EndVerticalLay();
+}
 
-   Layout();
-   Fit();
-   Centre();
+void LinkWithTokenDialog::BuildHeaderRow(ShuttleGui& s)
+{
+   s.StartHorizontalLay(wxEXPAND, 0);
+   {
+      s.AddFixedText(XO("Enter token to link your account"));
 
-   mToken->SetFocus();
+      s.AddSpace(kLabelLinkGap, 0, 1);
+
+      const auto audioComLink = safenew HyperLink(
+         s.GetParent(),
+         wxID_ANY,
+         XO("Sign-in and get the token").Translation(),
+         GetServiceConfig().GetOAuthLoginPage(mAudiocomTrace));
+      s.AddWindow(audioComLink);
+   }
+   s.EndHorizontalLay();
+}
+
+void LinkWithTokenDialog::BuildTokenBox(ShuttleGui& s)
+{
+   mToken = s.AddTextBox(TranslatableString {}, {}, kTokenBoxChars);
+   mToken->SetName(XO("Token").Translation());
+   mToken->Bind(wxEVT_TEXT, [this](auto) { OnTextChanged(); });
+}
+
+void LinkWithTokenDialog::BuildButtonRow(ShuttleGui& s)
+{
+   s.StartHorizontalLay(wxEXPAND, 0);
+   {
+      s.AddSpace(0, 0, 1);
+
+      s.AddButton(XXO("&Cancel"))
+         ->Bind(wxEVT_BUTTON, [this](auto) { Close(); });
+
+      mContinueButton = s.AddButton(XXO("C&ontinue"));
+      mContinueButton->Disable();
+      mContinueButton->Bind(wxEVT_BUTTON, [this](auto) { OnContinue(); });
+   }
+   s.EndHorizontalLay();
 }
 
 LinkWithTokenDialog::~LinkWithTokenDialog()

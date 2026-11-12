@@ -12,6 +12,7 @@
 
 #include "wxPanelWrapper.h"
 
+class ShuttleGui;
 class wxButton;
 class wxTextCtrl;
 enum class AudiocomTrace;
@@ -25,6 +26,12 @@ public:
    ~LinkWithTokenDialog() override;
 
 private:
+   // Construction of the dialog contents, in the order they are laid out
+   void BuildUI();
+   void BuildHeaderRow(ShuttleGui& s);
+   void BuildTokenBox(ShuttleGui& s);
+   void BuildButtonRow(ShuttleGui& s);
+
    void OnContinue();
    void OnTextChanged();
 
