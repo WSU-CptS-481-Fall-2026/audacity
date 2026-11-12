@@ -8,6 +8,7 @@ add_unit_test(
    MOCK_PREFS
    SOURCES
       LinkAccountMenuStateTests.cpp
+      LinkWithTokenLogicTests.cpp
    LIBRARIES
       lib-cloud-audiocom-interface
       lib-import-export-interface
