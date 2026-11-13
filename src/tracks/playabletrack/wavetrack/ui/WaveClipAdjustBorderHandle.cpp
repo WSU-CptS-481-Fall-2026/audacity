@@ -377,6 +377,32 @@ wxRect WaveClipAdjustBorderHandle::AdjustPolicy::DrawingArea(TrackPanelDrawingCo
    return rect;
 }
 
+namespace {
+
+//! Clips of a track that are drawn with details, in track order, together with
+//! their horizontal pixel extents (`intervals[i]` has the extent `edges[i]`)
+struct VisibleClips
+{
+   std::vector<std::shared_ptr<WaveTrack::Interval>> intervals;
+   std::vector<WaveClipBorderHit::ClipEdges> edges;
+};
+
+VisibleClips CollectVisibleClips(
+   WaveTrack& track, const ZoomInfo& zoomInfo, const wxRect& rect)
+{
+   VisibleClips result;
+   for (const auto& interval : track.Intervals()) {
+      if (!WaveChannelView::ClipDetailsVisible(*interval, zoomInfo, rect))
+         continue;
+
+      const auto clipRect = ClipParameters::GetClipRect(*interval, zoomInfo, rect);
+      result.intervals.push_back(interval);
+      result.edges.push_back({ clipRect.GetLeft(), clipRect.GetRight() });
+   }
+   return result;
+}
+} // namespace
+
 UIHandlePtr WaveClipAdjustBorderHandle::HitAnywhere(
    std::weak_ptr<WaveClipAdjustBorderHandle>& holder,
    const std::shared_ptr<WaveTrack>& waveTrack,
@@ -395,21 +421,18 @@ UIHandlePtr WaveClipAdjustBorderHandle::HitAnywhere(
    //Test left and right boundaries of each clip
    //to determine which kind of adjustment is
    //more appropriate
-   for (const auto &interval : waveTrack->Intervals()) {
-      const auto& clip = *interval;
-      if(!WaveChannelView::ClipDetailsVisible(clip, zoomInfo, rect))
-         continue;
-
-      auto clipRect = ClipParameters::GetClipRect(clip, zoomInfo, rect);
+   const auto visible = CollectVisibleClips(*waveTrack, zoomInfo, rect);
+   for (size_t i = 0; i < visible.intervals.size(); ++i) {
+      const auto& edges = visible.edges[i];
 
       //Skip clips that are too narrow to be adjusted
-      if (clipRect.GetWidth() < WaveClipBorderHit::MinClipWidth)
+      if (edges.Width() < WaveClipBorderHit::MinClipWidth)
          continue;
-         
-      if(std::abs(px - clipRect.GetLeft()) <= WaveClipBorderHit::NeighbourBoundaryThreshold)
-         rightInterval = interval;
-      else if (std::abs(px - clipRect.GetRight()) <= WaveClipBorderHit::NeighbourBoundaryThreshold)
-         leftInterval = interval;
+
+      if(std::abs(px - edges.left) <= WaveClipBorderHit::NeighbourBoundaryThreshold)
+         rightInterval = visible.intervals[i];
+      else if (std::abs(px - edges.right) <= WaveClipBorderHit::NeighbourBoundaryThreshold)
+         leftInterval = visible.intervals[i];
    }
 
    std::shared_ptr<WaveTrack::Interval> adjustedInterval;
