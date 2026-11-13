@@ -24,6 +24,10 @@ namespace WaveClipBorderHit {
 //! Distance in pixels from a clip border within which a click selects it
 constexpr int BoundaryThreshold = 5;
 
+//! Wider threshold used to find candidate borders before choosing between
+//! two neighbouring clips
+constexpr int NeighbourBoundaryThreshold = BoundaryThreshold * 2;
+
 //! Clips narrower than this (in pixels) can not be adjusted
 constexpr int MinClipWidth = 10;
 
@@ -72,9 +76,9 @@ FindAdjustTarget(const std::vector<ClipEdges>& clips, int px)
       if (clip.Width() < MinClipWidth)
          continue;
 
-      if (std::abs(px - clip.left) <= BoundaryThreshold * 2)
+      if (std::abs(px - clip.left) <= NeighbourBoundaryThreshold)
          rightClip = i;
-      else if (std::abs(px - clip.right) <= BoundaryThreshold * 2)
+      else if (std::abs(px - clip.right) <= NeighbourBoundaryThreshold)
          leftClip = i;
    }
 

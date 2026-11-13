@@ -32,6 +32,9 @@
 
 namespace {
 
+   //! Border handles are active only in this top fraction of the clip's height
+   constexpr double AdjustHandleHeightFraction = 0.3;
+
    void TrimLeftTo(WaveTrack::Interval& interval, double t)
    {
       interval.TrimLeftTo(t);
@@ -399,13 +402,13 @@ UIHandlePtr WaveClipAdjustBorderHandle::HitAnywhere(
 
       auto clipRect = ClipParameters::GetClipRect(clip, zoomInfo, rect);
 
-      //Skip clips that are under 10px
-      if (clipRect.GetWidth() < 10)
+      //Skip clips that are too narrow to be adjusted
+      if (clipRect.GetWidth() < WaveClipBorderHit::MinClipWidth)
          continue;
          
-      if(std::abs(px - clipRect.GetLeft()) <= BoundaryThreshold * 2)
+      if(std::abs(px - clipRect.GetLeft()) <= WaveClipBorderHit::NeighbourBoundaryThreshold)
          rightInterval = interval;
-      else if (std::abs(px - clipRect.GetRight()) <= BoundaryThreshold * 2)
+      else if (std::abs(px - clipRect.GetRight()) <= WaveClipBorderHit::NeighbourBoundaryThreshold)
          leftInterval = interval;
    }
 
@@ -481,7 +484,7 @@ UIHandlePtr WaveClipAdjustBorderHandle::HitTest(std::weak_ptr<WaveClipAdjustBord
     auto py = state.state.m_y;
 
     if (py >= rect.GetTop() &&
-        py <= (rect.GetTop() + static_cast<int>(rect.GetHeight() * 0.3)))
+        py <= (rect.GetTop() + static_cast<int>(rect.GetHeight() * AdjustHandleHeightFraction)))
     {
         return HitAnywhere(holder,
             waveChannel->GetTrack().SharedPointer<WaveTrack>(),

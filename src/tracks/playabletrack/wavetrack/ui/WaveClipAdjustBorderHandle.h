@@ -12,6 +12,7 @@
 
 #include "UIHandle.h"
 #include "WaveClip.h"
+#include "WaveClipBorderHit.h"
 
 class WaveChannelView;
 class WaveTrack;
@@ -22,7 +23,7 @@ public:
    class AdjustPolicy;
 private:
 
-    static constexpr int BoundaryThreshold = 5;
+    static constexpr int BoundaryThreshold = WaveClipBorderHit::BoundaryThreshold;
 
     static HitTestPreview HitPreviewTrim(const AudacityProject*, bool unsafe, bool isLeftBorder);
     static HitTestPreview HitPreviewStretch(const AudacityProject*, bool unsafe, bool isLeftBorder);
