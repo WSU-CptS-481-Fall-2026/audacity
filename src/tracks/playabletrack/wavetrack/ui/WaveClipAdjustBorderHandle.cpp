@@ -415,58 +415,16 @@ UIHandlePtr WaveClipAdjustBorderHandle::HitAnywhere(
 
    auto& zoomInfo = ViewInfo::Get(*pProject);
 
-   std::shared_ptr<WaveTrack::Interval> leftInterval;
-   std::shared_ptr<WaveTrack::Interval> rightInterval;
-
-   //Test left and right boundaries of each clip
-   //to determine which kind of adjustment is
-   //more appropriate
+   //Decide which clip border (if any) is under the pointer
    const auto visible = CollectVisibleClips(*waveTrack, zoomInfo, rect);
-   for (size_t i = 0; i < visible.intervals.size(); ++i) {
-      const auto& edges = visible.edges[i];
-
-      //Skip clips that are too narrow to be adjusted
-      if (edges.Width() < WaveClipBorderHit::MinClipWidth)
-         continue;
-
-      if(std::abs(px - edges.left) <= WaveClipBorderHit::NeighbourBoundaryThreshold)
-         rightInterval = visible.intervals[i];
-      else if (std::abs(px - edges.right) <= WaveClipBorderHit::NeighbourBoundaryThreshold)
-         leftInterval = visible.intervals[i];
-   }
+   const auto target = WaveClipBorderHit::FindAdjustTarget(visible.edges, px);
 
    std::shared_ptr<WaveTrack::Interval> adjustedInterval;
    bool adjustLeftBorder {false};
-   if (leftInterval && rightInterval)
+   if (target)
    {
-      //between adjacent clips
-      if(ClipParameters::GetClipRect(*leftInterval, zoomInfo, rect).GetRight() > px)
-      {
-         adjustedInterval = leftInterval;
-         adjustLeftBorder = false;
-      }
-      else
-      {
-         adjustedInterval = rightInterval;
-         adjustLeftBorder = true;
-      }
-   }
-   else
-   {
-      adjustedInterval = leftInterval ? leftInterval : rightInterval;
-      if (adjustedInterval)
-      {
-         //single clip case, determine the border,
-         //hit testing area differs from one
-         //used for general case
-         const auto clipRect = ClipParameters::GetClipRect(*adjustedInterval, zoomInfo, rect);
-         if (std::abs(px - clipRect.GetLeft()) <= BoundaryThreshold)
-            adjustLeftBorder = true;
-         else if (std::abs(px - clipRect.GetRight()) <= BoundaryThreshold)
-            adjustLeftBorder = false;
-         else
-            adjustedInterval.reset();
-      }
+      adjustedInterval = visible.intervals[target->clipIndex];
+      adjustLeftBorder = target->adjustLeftBorder;
    }
 
    if(adjustedInterval)
