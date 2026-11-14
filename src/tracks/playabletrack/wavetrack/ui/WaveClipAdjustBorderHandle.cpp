@@ -401,6 +401,15 @@ VisibleClips CollectVisibleClips(
    }
    return result;
 }
+
+//! Pick the operation that moves the given border of an interval
+AdjustClipBorder::AdjustHandler
+MakeAdjustHandler(bool isStretchMode, bool adjustLeftBorder)
+{
+   if (isStretchMode)
+      return adjustLeftBorder ? StretchLeftTo : StretchRightTo;
+   return adjustLeftBorder ? TrimLeftTo : TrimRightTo;
+}
 } // namespace
 
 UIHandlePtr WaveClipAdjustBorderHandle::HitAnywhere(
@@ -430,9 +439,8 @@ UIHandlePtr WaveClipAdjustBorderHandle::HitAnywhere(
    if(adjustedInterval)
    {
       const auto isStretchMode = state.state.AltDown();
-      AdjustClipBorder::AdjustHandler adjustHandler = isStretchMode
-         ? (adjustLeftBorder ? StretchLeftTo : StretchRightTo)
-         : (adjustLeftBorder ? TrimLeftTo : TrimRightTo);
+      const auto adjustHandler =
+         MakeAdjustHandler(isStretchMode, adjustLeftBorder);
 
       std::unique_ptr<AdjustPolicy> policy =
          std::make_unique<AdjustClipBorder>(
