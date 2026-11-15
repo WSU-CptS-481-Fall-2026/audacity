@@ -101,6 +101,42 @@ LinkWithTokenDialog::~LinkWithTokenDialog()
    GetAuthorizationHandler().PopSuppressDialogs();
 }
 
+namespace
+{
+//! Show the outcome of a link request. Runs on the UI thread.
+/*!
+ @param weakDialog the token dialog, which may have been closed meanwhile
+ @param trace where the link request originated
+ @param token the access token, empty if linking failed
+ */
+void ShowLinkResult(
+   wxWeakRef<LinkWithTokenDialog> weakDialog, AudiocomTrace trace,
+   const std::string& token)
+{
+   if (!token.empty())
+   {
+      if (weakDialog)
+      {
+         auto parent = weakDialog->GetParent();
+         weakDialog->Close();
+
+         LinkSucceededDialog successDialog { parent };
+         successDialog.ShowModal();
+      }
+
+      return;
+   }
+
+   LinkFailedDialog errorDialog(weakDialog, trace);
+
+   if (wxID_RETRY != errorDialog.ShowModal())
+   {
+      if (weakDialog)
+         weakDialog->Close();
+   }
+}
+} // namespace
+
 void LinkWithTokenDialog::OnContinue()
 {
    mContinueButton->Disable();
@@ -111,29 +147,8 @@ void LinkWithTokenDialog::OnContinue()
       audacity::ToUTF8(mToken->GetValue()), mAudiocomTrace,
       [weakDialog, trace = mAudiocomTrace](auto accessToken) {
          BasicUI::CallAfter(
-            [weakDialog, token = std::string(accessToken), trace]() {
-               if (!token.empty())
-               {
-                  if (weakDialog)
-                  {
-                     auto parent = weakDialog->GetParent();
-                     weakDialog->Close();
-
-                     LinkSucceededDialog successDialog { parent };
-                     successDialog.ShowModal();
-                  }
-
-                  return;
-               }
-
-               LinkFailedDialog errorDialog(weakDialog, trace);
-
-               if (wxID_RETRY != errorDialog.ShowModal())
-               {
-                  if (weakDialog)
-                     weakDialog->Close();
-               }
-            });
+            [weakDialog, token = std::string(accessToken), trace]()
+            { ShowLinkResult(weakDialog, trace, token); });
       });
 }
 
