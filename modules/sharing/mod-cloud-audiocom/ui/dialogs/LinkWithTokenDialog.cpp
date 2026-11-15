@@ -27,6 +27,7 @@
 #include "AuthorizationHandler.h"
 #include "LinkFailedDialog.h"
 #include "LinkSucceededDialog.h"
+#include "LinkWithTokenFlow.h"
 #include "HyperLink.h"
 
 namespace audacity::cloud::audiocom
@@ -113,27 +114,28 @@ void ShowLinkResult(
    wxWeakRef<LinkWithTokenDialog> weakDialog, AudiocomTrace trace,
    const std::string& token)
 {
-   if (!token.empty())
+   switch (DecideLinkOutcome(!token.empty(), static_cast<bool>(weakDialog)))
    {
-      if (weakDialog)
-      {
-         auto parent = weakDialog->GetParent();
-         weakDialog->Close();
+   case LinkOutcome::ShowSuccess:
+   {
+      auto parent = weakDialog->GetParent();
+      weakDialog->Close();
 
-         LinkSucceededDialog successDialog { parent };
-         successDialog.ShowModal();
-      }
-
+      LinkSucceededDialog successDialog { parent };
+      successDialog.ShowModal();
       return;
+   }
+   case LinkOutcome::Ignore:
+      return;
+   case LinkOutcome::ShowFailure:
+      break;
    }
 
    LinkFailedDialog errorDialog(weakDialog, trace);
 
-   if (wxID_RETRY != errorDialog.ShowModal())
-   {
-      if (weakDialog)
-         weakDialog->Close();
-   }
+   const bool retryChosen = wxID_RETRY == errorDialog.ShowModal();
+   if (ShouldCloseAfterFailure(retryChosen, static_cast<bool>(weakDialog)))
+      weakDialog->Close();
 }
 } // namespace
 
@@ -154,7 +156,8 @@ void LinkWithTokenDialog::OnContinue()
 
 void LinkWithTokenDialog::OnTextChanged()
 {
-   mContinueButton->Enable(!mToken->GetValue().empty());
+   mContinueButton->Enable(
+      IsTokenSubmittable(audacity::ToUTF8(mToken->GetValue())));
 }
 
 } // namespace audacity::cloud::audiocom
