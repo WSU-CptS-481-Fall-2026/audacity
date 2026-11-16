@@ -21,13 +21,14 @@
 
 namespace {
 
-static void ComputeSpectrumUsingRealFFTf
+void ComputeSpectrumUsingRealFFTf
    (float * __restrict buffer, const FFTParam *hFFT,
     const float * __restrict window, size_t len, float * __restrict out)
 {
+   constexpr float kZeroPowerDecibels = -160.0f;
    size_t i;
-   if(len > hFFT->Points * 2)
-      len = hFFT->Points * 2;
+   len = std::min(len, hFFT->Points * 2);
+   len = hFFT->Points * 2;
    for(i = 0; i < len; i++)
       buffer[i] *= window[i];
    for( ; i < (hFFT->Points * 2); i++)
@@ -36,15 +37,16 @@ static void ComputeSpectrumUsingRealFFTf
    // Handle the (real-only) DC
    float power = buffer[0] * buffer[0];
    if(power <= 0)
-      out[0] = -160.0;
+      out[0] = kZeroPowerDecibels;
    else
       out[0] = 10.0 * log10f(power);
    for(i = 1; i < hFFT->Points; i++) {
       const int index = hFFT->BitReversed[i];
-      const float re = buffer[index], im = buffer[index + 1];
-      power = re * re + im * im;
+      const float real = buffer[index];
+        const float imaginary = buffer[index + 1];
+      power = real * real + imaginary * imaginary;
       if(power <= 0)
-         out[i] = -160.0;
+         out[i] = kZeroPowerDecibels;
       else
          out[i] = 10.0*log10f(power);
    }
@@ -58,7 +60,7 @@ void ComputeSpectrogramGainFactors
       // scaled such that 1000 Hz gets a gain of 0dB
 
       // This is the reciprocal of the bin number of 1000 Hz:
-      const double factor = ((double)rate / (double)fftLen) / 1000.0;
+      const double factor = (rate / (double)fftLen) / 1000.0;
 
       auto half = fftLen / 2;
       gainFactors.reserve(half);
@@ -72,7 +74,7 @@ void ComputeSpectrogramGainFactors
 
 }
 
-bool SpecCache::isWaveletAnalysis(const SpectrogramSettings& settings) const
+bool SpecCache::isWaveletAnalysis(const SpectrogramSettings& settings) 
 {
     return settings.algorithm == SpectrogramSettings::algWavelet;
 }
@@ -105,40 +107,190 @@ bool SpecCache::Matches(
       algorithm == settings.algorithm;
 }
 
-bool SpecCache::CalculateOneSpectrum(
-   const SpectrogramSettings& settings, const WaveChannelInterval& clip,
-   const int xx, double pixelsPerSecond, int lowerBoundX, int upperBoundX,
-   const std::vector<float>& gainFactors, float* __restrict scratch,
-   float* __restrict out) const
+static void ApplyWindowAndFFT(float* buffer, const float* window, size_t fftLen, FFTParam* hFFT)
+{
+   for (size_t ii = 0; ii < fftLen; ++ii)
+   {
+      buffer[ii] *= window[ii];
+   }
+   RealFFTf(buffer, hFFT);
+}
+
+void SpecCache::AdjustSampleWindowBounds(sampleCount& from, size_t& myLen, sampleCount numSamples, float*& adj,bool& copy)
+{
+   if (from < 0) {
+      // Near the start of the clip, pad left with zeroes as needed.
+      // from is at least -windowSize / 2
+      for (auto ii = from; ii < 0; ++ii)
+         *adj++ = 0;
+      myLen += from.as_long_long(); // add a negative
+      from = 0;
+      copy = true;
+   }
+
+   if (from + myLen >= numSamples) {
+      // Near the end of the clip, pad right with zeroes as needed.
+      // newlen is bounded by myLen:
+      auto newlen = (numSamples - from).as_size_t();
+      for (decltype(myLen) ii = newlen; ii < myLen; ++ii)
+         adj[ii] = 0;
+      myLen = newlen;
+      copy = true;
+   }
+}
+
+sampleCount SpecCache::GetSamplePosition(
+   int xx, double samplesPerPixel) const
+{
+   if (xx < 0)
+      return sampleCount(where[0].as_double() + (xx * samplesPerPixel));
+   else if (xx > (int)len)
+      return sampleCount(where[len].as_double() + (xx - len) * samplesPerPixel);
+   return where[xx];
+}
+SpecCache::ComplexValue
+SpecCache::GetFFTValue(const float* buffer, int index, size_t ii)
+{
+   return {
+      buffer[index],
+      ii == 0 ? 0.0F : buffer[index + 1]
+   };
+}
+
+bool SpecCache::CalculateReassignment(
+   const SpectrogramSettings& settings,
+   int xx,
+   double pixelsPerSecond,
+   double sampleRate,
+   SpectrumRange range,
+   float* scratch,
+   float* out)
 {
    bool result = false;
+   const size_t fftLen =
+      settings.WindowSize() * settings.ZeroPaddingFactor();
+   const auto nBins = settings.NBins();
+   static const double epsilon = 1e-16;
+   auto *const hFFT = settings.hFFT.get();
+
+   float* const scratch2 = scratch + fftLen;
+   std::copy(scratch, scratch2, scratch2);
+
+   float* const scratch3 = scratch + (2 * fftLen);
+   std::copy(scratch, scratch2, scratch3);
+
+   ApplyWindowAndFFT(scratch, settings.window.get(), fftLen, hFFT);
+
+   ApplyWindowAndFFT(scratch2, settings.dWindow.get(), fftLen, hFFT);
+
+   ApplyWindowAndFFT(scratch3, settings.tWindow.get(), fftLen, hFFT);
+
+
+   for (size_t ii = 0; ii < hFFT->Points; ++ii) {
+      const int index = hFFT->BitReversed[ii];
+      const auto denom = GetFFTValue(scratch, index, ii);
+
+      const double power = (denom.real * denom.real) + (denom.imag * denom.imag);
+      if (power < epsilon)
+         // Avoid dividing by near-zero below
+         continue;
+
+      const auto freqNum = GetFFTValue(scratch2, index, ii);
+
+      // Find complex quotient --
+      // Which means, multiply numerator by conjugate of denominator,
+      // then divide by norm squared of denominator --
+      // Then just take its imaginary part.
+      const double quotIm =
+         (-freqNum.real * denom.imag +
+            freqNum.imag * denom.real) / power;
+
+      // With appropriate multiplier, that becomes the correction of
+      // the frequency bin.
+      const double freqCorrection = -(fftLen / (2.0F * M_PI)) * quotIm;
+
+      const int bin = (int)((int)ii + freqCorrection + 0.5F);
+      // Must check if correction takes bin out of bounds, above or below!
+      // bin is signed!
+      if (bin >= 0 && bin < (int)hFFT->Points) {
+         const auto timeNum = GetFFTValue(scratch3, index, ii);
+
+         // Find another complex quotient --
+         // Then just take its real part.
+         // The result has sample interval as unit.
+         const double timeCorrection =
+            (timeNum.real * denom.real +
+               timeNum.imag * denom.imag) / power;
+
+         // PRL: timeCorrection is scaled to the clip's raw sample rate,
+         // without the stretching ratio correction for real time. We want
+         // to find the correct X coordinate for that.
+         int correctedX = floor(
+            0.5 + xx + ((timeCorrection * pixelsPerSecond) / sampleRate));
+         if (correctedX >= range.lower && correctedX < range.upper)
+         {
+            result = true;
+
+            // This is non-negative, because bin and correctedX are
+            auto ind = ((int)nBins * correctedX) + bin;
+#ifdef _OPENMP
+            // This assignment can race if index reaches into another thread's bins.
+            // The probability of a race very low, so this carries little overhead,
+            // about 5% slower vs allowing it to race.
+#pragma omp atomic update
+#endif
+            out[ind] += power;
+         }
+      }
+   }
+}
+
+float*  SpecCache::PrepareSampleBuffer(size_t myLen, const WaveChannelInterval& clip, sampleCount from, float* adj, bool copy, std::vector<float>& floats) const
+{
+   if (myLen > 0) {
+      float* useBuffer = 0;
+      constexpr auto mayThrow = false; // Don't throw just for display
+      mSampleCacheHolder.emplace(
+         clip.GetSampleView(from, myLen, mayThrow));
+      floats.resize(myLen);
+      mSampleCacheHolder->Copy(floats.data(), myLen);
+      useBuffer = floats.data();
+      if (copy) {
+         if (useBuffer)
+            memcpy(adj, useBuffer, myLen * sizeof(float));
+         else
+            memset(adj, 0, myLen * sizeof(float));
+      }
+      return useBuffer;
+   }
+   return nullptr;
+}
+
+bool SpecCache::CalculateOneSpectrum(
+   const int xx, SpectrumRange range, float* __restrict scratch, float* __restrict out, SpectrumContext context) const
+{
+   bool result = false;
+
    const bool reassignment =
-      (settings.algorithm == SpectrogramSettings::algReassignment);
-   const size_t windowSizeSetting = settings.WindowSize();
+      (context.settings.algorithm == SpectrogramSettings::algReassignment);
+   const size_t windowSizeSetting = context.settings.WindowSize();
 
-   sampleCount from;
-
-   const auto numSamples = clip.GetSequence().GetNumSamples();
-   const auto sampleRate = clip.GetRate();
-   const auto stretchRatio = clip.GetStretchRatio();
-   const auto samplesPerPixel = sampleRate / pixelsPerSecond / stretchRatio;
+   const auto numSamples = context.clip.GetSequence().GetNumSamples();
+   const auto sampleRate = context.clip.GetRate();
+   const auto stretchRatio = context.clip.GetStretchRatio();
+   const auto samplesPerPixel = sampleRate / context.pixelsPerSecond / stretchRatio;
    // xx may be for a column that is out of the visible bounds, but only
    // when we are calculating reassignment contributions that may cross into
    // the visible area.
 
-   if (xx < 0)
-      from = sampleCount(where[0].as_double() + xx * samplesPerPixel);
-   else if (xx > (int)len)
-      from = sampleCount(where[len].as_double() + (xx - len) * samplesPerPixel);
-   else
-      from = where[xx];
+   sampleCount from = GetSamplePosition(xx, samplesPerPixel);
 
    const bool autocorrelation =
-      settings.algorithm == SpectrogramSettings::algPitchEAC;
-   const size_t zeroPaddingFactorSetting = settings.ZeroPaddingFactor();
+      context.settings.algorithm == SpectrogramSettings::algPitchEAC;
+   const size_t zeroPaddingFactorSetting = context.settings.ZeroPaddingFactor();
    const size_t padding = (windowSizeSetting * (zeroPaddingFactorSetting - 1)) / 2;
    const size_t fftLen = windowSizeSetting * zeroPaddingFactorSetting;
-   auto nBins = settings.NBins();
+   auto nBins = context.settings.NBins();
 
    if (from < 0 || from >= numSamples) {
       if (xx >= 0 && xx < (int)len) {
@@ -152,7 +304,6 @@ bool SpecCache::CalculateOneSpectrum(
 
       // We can avoid copying memory when ComputeSpectrum is used below
       bool copy = !autocorrelation || (padding > 0) || reassignment;
-      std::vector<float> floats;
       float* useBuffer = 0;
       float *adj = scratch + padding;
 
@@ -160,41 +311,11 @@ bool SpecCache::CalculateOneSpectrum(
          auto myLen = windowSizeSetting;
          // Take a window of the track centered at this sample.
          from -= windowSizeSetting >> 1;
-         if (from < 0) {
-            // Near the start of the clip, pad left with zeroes as needed.
-            // from is at least -windowSize / 2
-            for (auto ii = from; ii < 0; ++ii)
-               *adj++ = 0;
-            myLen += from.as_long_long(); // add a negative
-            from = 0;
-            copy = true;
-         }
 
-         if (from + myLen >= numSamples) {
-            // Near the end of the clip, pad right with zeroes as needed.
-            // newlen is bounded by myLen:
-            auto newlen = ( numSamples - from ).as_size_t();
-            for (decltype(myLen) ii = newlen; ii < myLen; ++ii)
-               adj[ii] = 0;
-            myLen = newlen;
-            copy = true;
-         }
-
-         if (myLen > 0) {
-            constexpr auto iChannel = 0u;
-            constexpr auto mayThrow = false; // Don't throw just for display
-            mSampleCacheHolder.emplace(
-               clip.GetSampleView(from, myLen, mayThrow));
-            floats.resize(myLen);
-            mSampleCacheHolder->Copy(floats.data(), myLen);
-            useBuffer = floats.data();
-            if (copy) {
-               if (useBuffer)
-                  memcpy(adj, useBuffer, myLen * sizeof(float));
-               else
-                  memset(adj, 0, myLen * sizeof(float));
-            }
-         }
+         //handles padding, left or right depending on where clip is located.
+         AdjustSampleWindowBounds(from, myLen, numSamples, adj, copy);
+         std::vector<float> floats;
+         useBuffer = PrepareSampleBuffer(myLen, context.clip, from, adj, copy, floats);
       }
 
       if (copy || !useBuffer)
@@ -207,103 +328,10 @@ bool SpecCache::CalculateOneSpectrum(
          // This function does not mutate useBuffer
          ComputeSpectrum(
             useBuffer, windowSizeSetting, windowSizeSetting, results,
-            autocorrelation, settings.windowType);
+            autocorrelation, context.settings.windowType);
       }
       else if (reassignment) {
-         static const double epsilon = 1e-16;
-         const auto hFFT = settings.hFFT.get();
-
-         float *const scratch2 = scratch + fftLen;
-         std::copy(scratch, scratch2, scratch2);
-
-         float *const scratch3 = scratch + 2 * fftLen;
-         std::copy(scratch, scratch2, scratch3);
-
-         {
-            const float *const window = settings.window.get();
-            for (size_t ii = 0; ii < fftLen; ++ii)
-               scratch[ii] *= window[ii];
-            RealFFTf(scratch, hFFT);
-         }
-
-         {
-            const float *const dWindow = settings.dWindow.get();
-            for (size_t ii = 0; ii < fftLen; ++ii)
-               scratch2[ii] *= dWindow[ii];
-            RealFFTf(scratch2, hFFT);
-         }
-
-         {
-            const float *const tWindow = settings.tWindow.get();
-            for (size_t ii = 0; ii < fftLen; ++ii)
-               scratch3[ii] *= tWindow[ii];
-            RealFFTf(scratch3, hFFT);
-         }
-
-         for (size_t ii = 0; ii < hFFT->Points; ++ii) {
-            const int index = hFFT->BitReversed[ii];
-            const float
-               denomRe = scratch[index],
-               denomIm = ii == 0 ? 0 : scratch[index + 1];
-            const double power = denomRe * denomRe + denomIm * denomIm;
-            if (power < epsilon)
-               // Avoid dividing by near-zero below
-               continue;
-
-            double freqCorrection;
-            {
-               const double multiplier = -(fftLen / (2.0f * M_PI));
-               const float
-                  numRe = scratch2[index],
-                  numIm = ii == 0 ? 0 : scratch2[index + 1];
-               // Find complex quotient --
-               // Which means, multiply numerator by conjugate of denominator,
-               // then divide by norm squared of denominator --
-               // Then just take its imaginary part.
-               const double
-                  quotIm = (-numRe * denomIm + numIm * denomRe) / power;
-               // With appropriate multiplier, that becomes the correction of
-               // the frequency bin.
-               freqCorrection = multiplier * quotIm;
-            }
-
-            const int bin = (int)((int)ii + freqCorrection + 0.5f);
-            // Must check if correction takes bin out of bounds, above or below!
-            // bin is signed!
-            if (bin >= 0 && bin < (int)hFFT->Points) {
-               double timeCorrection;
-               {
-                  const float
-                     numRe = scratch3[index],
-                     numIm = ii == 0 ? 0 : scratch3[index + 1];
-                  // Find another complex quotient --
-                  // Then just take its real part.
-                  // The result has sample interval as unit.
-                  timeCorrection =
-                     (numRe * denomRe + numIm * denomIm) / power;
-               }
-
-               // PRL: timeCorrection is scaled to the clip's raw sample rate,
-               // without the stretching ratio correction for real time. We want
-               // to find the correct X coordinate for that.
-               int correctedX = (floor(
-                  0.5 + xx + timeCorrection * pixelsPerSecond / sampleRate));
-               if (correctedX >= lowerBoundX && correctedX < upperBoundX)
-               {
-                  result = true;
-
-                  // This is non-negative, because bin and correctedX are
-                  auto ind = (int)nBins * correctedX + bin;
-#ifdef _OPENMP
-                  // This assignment can race if index reaches into another thread's bins.
-                  // The probability of a race very low, so this carries little overhead,
-                  // about 5% slower vs allowing it to race.
-                  #pragma omp atomic update
-#endif
-                  out[ind] += power;
-               }
-            }
-         }
+         result = CalculateReassignment(context.settings, xx, context.pixelsPerSecond, sampleRate, range, scratch, out);
       }
       else {
          // not reassignment, xx is surely within bounds.
@@ -317,11 +345,11 @@ bool SpecCache::CalculateOneSpectrum(
 
          // This function mutates useBuffer
          ComputeSpectrumUsingRealFFTf
-            (useBuffer, settings.hFFT.get(), settings.window.get(), fftLen, results);
-         if (!gainFactors.empty()) {
+            (useBuffer, context.settings.hFFT.get(), context.settings.window.get(), fftLen, results);
+         if (!context.gainFactors.empty()) {
             // Apply a frequency-dependent gain factor
             for (size_t ii = 0; ii < nBins; ++ii)
-               results[ii] += gainFactors[ii];
+               results[ii] += context.gainFactors[ii];
          }
       }
    }
@@ -329,22 +357,66 @@ bool SpecCache::CalculateOneSpectrum(
    return result;
 }
 
+void SpecCache::CalculateWaveletBins(
+   const SpectrogramSettings& settings,
+   const float* middleSample,
+   float* results)
+{
+   const size_t nBins = settings.NBins();
+   constexpr float kZeroPowerDecibels = -160.0F;
+
+   for (size_t iBin = 0; iBin < nBins; ++iBin) {
+      if (settings.waveletSizes[iBin] == 0) {
+         results[iBin] = kZeroPowerDecibels;
+         continue;
+      }
+
+      const float* right = middleSample;
+      const float* left = middleSample;
+
+      // Do the inner product
+      const float* wRe = &settings.waveletsRe[iBin][0];
+      const float* wIm = &settings.waveletsIm[iBin][0];
+
+      double sumRe = *middleSample * *wRe;
+      double sumIm = 0.0;
+
+      wRe++, wIm++, right++, left--;
+
+      const auto halfLen = settings.waveletSizes[iBin];
+
+      for (auto ii = 1; ii < halfLen; ii++) {
+         sumRe += (*right + *left) * *wRe;
+         sumIm += (*left - *right) * *wIm;
+
+         wRe++, wIm++, right++, left--;
+      }
+
+      // Calculate magnitude
+      float power = (sumRe * sumRe) + (sumIm * sumIm);
+
+      if (power <= 0)
+         power = kZeroPowerDecibels;
+      else
+         power = 10.0 * log10f(power);
+
+      results[iBin] = power;
+   }
+}
+
 bool SpecCache::CalculateOneWaveletSpectrum(
-   const SpectrogramSettings& settings, const WaveChannelInterval& clip,
-   const int xx, double pixelsPerSecond, int lowerBoundX, int upperBoundX,
-   const std::vector<float>& gainFactors,
-   float* __restrict out) const
+   const int xx, SpectrumRange range, float* __restrict out, SpectrumContext context) const
 {
    bool result = false;
    sampleCount from;
 
-   const auto numSamples = clip.GetSequence().GetNumSamples();
-   const auto sampleRate = clip.GetRate();
-   const auto stretchRatio = clip.GetStretchRatio();
-   const auto samplesPerPixel = sampleRate / pixelsPerSecond / stretchRatio;
-   const size_t nBins = settings.NBins();
+   const auto numSamples = context.clip.GetSequence().GetNumSamples();
+   const auto sampleRate = context.clip.GetRate();
+   const auto stretchRatio = context.clip.GetStretchRatio();
+   const auto samplesPerPixel = sampleRate / context.pixelsPerSecond / stretchRatio;
+   const size_t nBins = context.settings.NBins();
    float *const results = &out[nBins * xx];
-
+   std::vector<float> floats;
    // not reassignment, xx is surely within bounds.
    wxASSERT(xx >= 0);
    if (xx > (int)len)
@@ -365,86 +437,26 @@ bool SpecCache::CalculateOneWaveletSpectrum(
       // We extract samples corresponding to max wavelet length (the first)
     
       // Locate longest wavelet (first one)
-      const auto longestWaveletLen = settings.waveletMaxLength;
+      const auto longestWaveletLen = context.settings.waveletMaxLength;
       wxASSERT(longestWaveletLen);
        
       auto myLen = 2 * longestWaveletLen - 1;
       std::vector<float> scratch(myLen);
+      bool copy = true;
+      float* adj = scratch.data();
 
-      // Take a window of the track centered at this sample.
-      from -= longestWaveletLen;
-      float * adj = &scratch[0];
-      if (from < 0) {
-         // Near the start of the clip, pad left with zeroes as needed.
-         for (auto ii = from; ii < 0; ++ii)
-             *adj++ = 0;
-         myLen += from.as_long_long(); // add a negative
-         from = 0;
-      }
-      if (from + myLen >= numSamples) {
-         // Near the end of the clip, pad right with zeroes as needed.
-         // newlen is bounded by myLen:
-         auto newlen = ( numSamples - from ).as_size_t();
-         for (decltype(myLen) ii = newlen; ii < myLen; ++ii)
-             adj[ii] = 0;
-         myLen = newlen;
-      }
-      std::vector<float> floats;
-      if (myLen > 0) {
-         constexpr auto iChannel = 0u;
-         constexpr auto mayThrow = false; // Don't throw just for display
-         mSampleCacheHolder.emplace(
-             clip.GetSampleView(from, myLen, mayThrow));
-         floats.resize(myLen);
-         mSampleCacheHolder->Copy(floats.data(), myLen);
-         float *useBuffer = floats.data();
-         memcpy(adj, useBuffer, myLen * sizeof(float));
-      }
-
+      //Fixes padding on left and right depending on where the clip is
+      AdjustSampleWindowBounds(from, myLen, numSamples, adj, copy);
+      PrepareSampleBuffer(myLen, context.clip, from, adj, copy, floats);
+      
       // Done preparing samples. Now onward with calculations
       const float * middleSample = &scratch[longestWaveletLen - 1];
-      for (size_t iBin = 0; iBin < nBins; iBin++)
-      {
-          if (settings.waveletSizes[iBin] == 0)
-          {
-             results[iBin] = -160.0;
-             continue;
-          }
-         
-          const float *right = middleSample;
-          const float *left = middleSample;
-          // Do the inner product
-          const float * wRe = &settings.waveletsRe[iBin][0];
-          const float * wIm = &settings.waveletsIm[iBin][0];
-          double sumRe = *middleSample * *wRe;
-          double sumIm = 0.0;
-          wRe++, wIm++, right++, left--;
-          const auto halfLen = settings.waveletSizes[iBin];
-          for (auto ii = 1; ii < halfLen; ii++)
-          {
-              sumRe +=  (*right + *left) * *wRe;
-              sumIm +=  (*left - *right) * *wIm;
-              wRe++, wIm++, right++, left--;
-          }
+      CalculateWaveletBins(context.settings, middleSample, results);
 
-          // Calculate magnitude
-          float power = sumRe * sumRe + sumIm * sumIm;
-          
-          
-          // Do the log thing
-          if (power <= 0)
-             power = -160.0;
-          else
-             power = 10.0*log10f(power);
-
-          results[iBin] = power;
-      }
-
-
-       if (!gainFactors.empty()) {
+       if (!context.gainFactors.empty()) {
           // Apply a frequency-dependent gain factor
           for (size_t ii = 0; ii < nBins; ++ii)
-             results[ii] += gainFactors[ii];
+             results[ii] += context.gainFactors[ii];
        }
        result = true;
    }
@@ -476,6 +488,107 @@ void SpecCache::Grow(
    frequencyGain = settings.frequencyGain;
 }
 
+void SpecCache::ProcessSpectrumRange(
+   SpectrumRange range,
+   const SpectrumContext& context,
+   std::vector<float>& scratch,
+   size_t scratchSize)
+{
+   // todo(mhodgkinson): I don't find an option to define _OPENMP anywhere. Is this
+// still of interest?
+#ifdef _OPENMP
+      // Storage for mutable per-thread data.
+      // private clause ensures one copy per thread
+   struct ThreadLocalStorage {
+      ThreadLocalStorage() {}
+      ~ThreadLocalStorage() {}
+
+      void init(SampleTrackCache& waveTrackCache, size_t scratchSize) {
+         if (!cache) {
+            cache = std::make_unique<SampleTrackCache>(waveTrackCache.GetTrack());
+            scratch.resize(scratchSize);
+         }
+      }
+      std::unique_ptr<SampleTrackCache> cache;
+      std::vector<float> scratch;
+   } tls;
+
+#pragma omp parallel for private(tls)
+#endif
+   for (auto xx = range.lower; xx < range.upper; ++xx)
+   {
+      if (isWaveletAnalysis(context.settings))
+      {
+         CalculateOneWaveletSpectrum(xx, range, freq.data(), context);
+      }
+      else
+      {
+#ifdef _OPENMP
+         tls.init(waveTrackCache, scratchSize);
+         float* buffer = &tls.scratch[0];
+#else
+         float* buffer = scratch.data();
+#endif
+         CalculateOneSpectrum(xx, range,
+           buffer, freq.data(), context);
+      }
+   }
+}
+
+void SpecCache::ProcessReassignment(
+   SpectrumContext context,
+   SpectrumRange range,
+   std::vector<float>& scratch)
+{
+   // Need to look beyond the edges of the range to accumulate more
+         // time reassignments.
+         // I'm not sure what's a good stopping criterion?
+   const auto sampleRate = context.clip.GetRate();
+   const auto fftLen =
+      context.settings.WindowSize() * context.settings.ZeroPaddingFactor();
+   const auto nBins = context.settings.NBins();
+   auto xx = range.lower;
+   const double pixelsPerSample =
+      context.pixelsPerSecond * context.clip.GetStretchRatio() / sampleRate;
+   const int limit = std::min((int)(0.5 + fftLen * pixelsPerSample), 100);
+   for (int ii = 0; ii < limit; ++ii)
+   {
+      const bool result = CalculateOneSpectrum(--xx, range, scratch.data(), freq.data(), context);
+      if (!result)
+         break;
+   }
+
+   xx = range.upper;
+   for (int ii = 0; ii < limit; ++ii)
+   {
+      const bool result = CalculateOneSpectrum(xx++, range, scratch.data(), freq.data(), context);
+      if (!result)
+         break;
+   }
+
+   // Now Convert to dB terms.  Do this only after accumulating
+   // power values, which may cross columns with the time correction.
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
+   constexpr float kZeroPowerDecibels = -160.0f;
+   for (xx = range.lower; xx < range.upper; ++xx) {
+      float* const results = &freq[nBins * xx];
+      for (size_t ii = 0; ii < nBins; ++ii) {
+         float& power = results[ii];
+         if (power <= 0)
+            power = kZeroPowerDecibels;
+         else
+            power = 10.0 * log10f(power);
+      }
+      if (!context.gainFactors.empty()) {
+         // Apply a frequency-dependent gain factor
+         for (size_t ii = 0; ii < nBins; ++ii)
+            results[ii] += context.gainFactors[ii];
+      }
+   }
+}
+
 void SpecCache::Populate(
    const SpectrogramSettings& settings, const WaveChannelInterval& clip,
    int copyBegin, int copyEnd, size_t numPixels, double pixelsPerSecond)
@@ -503,105 +616,94 @@ void SpecCache::Populate(
       ComputeSpectrogramGainFactors(
          fftLen, sampleRate, frequencyGainSetting, gainFactors);
 
+   //Created shared context for spectrum calculations and reassignment
+   const SpectrumContext context{
+      settings,
+      clip,
+      pixelsPerSecond,
+      gainFactors
+   };
+
    // Loop over the ranges before and after the copied portion and compute anew.
    // One of the ranges may be empty.
    for (int jj = 0; jj < 2; ++jj) {
-      const int lowerBoundX = jj == 0 ? 0 : copyEnd;
-      const int upperBoundX = jj == 0 ? copyBegin : numPixels;
+      const SpectrumRange range{
+      jj == 0 ? 0 : copyEnd,
+      jj == 0 ? copyBegin : static_cast<int>(numPixels)
+      };
 
-// todo(mhodgkinson): I don't find an option to define _OPENMP anywhere. Is this
-// still of interest?
-#ifdef _OPENMP
-      // Storage for mutable per-thread data.
-      // private clause ensures one copy per thread
-      struct ThreadLocalStorage {
-         ThreadLocalStorage()  { }
-         ~ThreadLocalStorage() { }
-
-         void init(SampleTrackCache &waveTrackCache, size_t scratchSize) {
-            if (!cache) {
-               cache = std::make_unique<SampleTrackCache>(waveTrackCache.GetTrack());
-               scratch.resize(scratchSize);
-            }
-         }
-         std::unique_ptr<SampleTrackCache> cache;
-         std::vector<float> scratch;
-      } tls;
-
-      #pragma omp parallel for private(tls)
-#endif
-      for (auto xx = lowerBoundX; xx < upperBoundX; ++xx)
-      {
-         if (isWaveletAnalysis(settings))
-         {
-             CalculateOneWaveletSpectrum(settings, clip, xx, pixelsPerSecond, lowerBoundX, upperBoundX,
-                                         gainFactors, &freq[0]);
-         }
-         else
-         {
-#ifdef _OPENMP
-             tls.init(waveTrackCache, scratchSize);
-             SampleTrackCache& cache = *tls.cache;
-             float* buffer = &tls.scratch[0];
-#else
-             float* buffer = &scratch[0];
-#endif
-             CalculateOneSpectrum(
-                         settings, clip, xx, pixelsPerSecond, lowerBoundX, upperBoundX,
-                         gainFactors, buffer, &freq[0]);
-         }
-      }
+      // Process each pixel column within the specified range,
+      // using either wavelet or FFT-based spectrum analysis. 
+      ProcessSpectrumRange(range, context, scratch, scratchSize);
 
       if (reassignment) {
-         // Need to look beyond the edges of the range to accumulate more
-         // time reassignments.
-         // I'm not sure what's a good stopping criterion?
-         auto xx = lowerBoundX;
-         const double pixelsPerSample =
-            pixelsPerSecond * clip.GetStretchRatio() / sampleRate;
-         const int limit = std::min((int)(0.5 + fftLen * pixelsPerSample), 100);
-         for (int ii = 0; ii < limit; ++ii)
-         {
-            const bool result = CalculateOneSpectrum(
-               settings, clip, --xx, pixelsPerSecond, lowerBoundX, upperBoundX,
-               gainFactors, &scratch[0], &freq[0]);
-            if (!result)
-               break;
-         }
-
-         xx = upperBoundX;
-         for (int ii = 0; ii < limit; ++ii)
-         {
-            const bool result = CalculateOneSpectrum(
-               settings, clip, xx++, pixelsPerSecond, lowerBoundX, upperBoundX,
-               gainFactors, &scratch[0], &freq[0]);
-            if (!result)
-               break;
-         }
-
-         // Now Convert to dB terms.  Do this only after accumulating
-         // power values, which may cross columns with the time correction.
-#ifdef _OPENMP
-         #pragma omp parallel for
-#endif
-         for (xx = lowerBoundX; xx < upperBoundX; ++xx) {
-            float *const results = &freq[nBins * xx];
-            for (size_t ii = 0; ii < nBins; ++ii) {
-               float &power = results[ii];
-               if (power <= 0)
-                  power = -160.0;
-               else
-                  power = 10.0*log10f(power);
-            }
-            if (!gainFactors.empty()) {
-               // Apply a frequency-dependent gain factor
-               for (size_t ii = 0; ii < nBins; ++ii)
-                  results[ii] += gainFactors[ii];
-            }
-         }
+         //handles frequency reassignment contributions near the boundaries of a spectrogram range, then converts the accumulated power values into decibels.
+         ProcessReassignment(context, range, scratch);
       }
    }
 }
+
+bool WaveClipSpectrumCache::IsCacheValid(
+   const SpecCache* cache,
+   const WaveChannelInterval& clip,
+   double samplesPerPixel,
+   const SpectrogramSettings& settings) const
+{
+   return (cache != nullptr) &&
+      cache->leftTrim == clip.GetTrimLeft() &&
+      cache->rightTrim == clip.GetTrimRight() &&
+      cache->len > 0 &&
+      cache->Matches(mDirty, samplesPerPixel, settings);
+}
+
+
+WaveClipSpectrumCache::CacheOverlap
+WaveClipSpectrumCache::CalculateCacheOverlap(
+   const SpecCache& cache,
+   size_t numPixels,
+   double t0,
+   double sampleRate,
+   double stretchRatio,
+   double samplesPerPixel)
+{
+   CacheOverlap overlap;
+   WaveClipUIUtilities::findCorrection(
+      cache.where, cache.len, numPixels, t0, sampleRate,
+      stretchRatio, samplesPerPixel, overlap.oldX0, overlap.correction);
+
+   // Determine which pixel columns can be reused from the old cache.
+   const int oldLen = cache.len;
+
+   overlap.copyBegin = std::min(oldLen, std::max(0, -overlap.oldX0));
+   overlap.copyEnd = std::min(oldLen, std::max(0, oldLen - overlap.oldX0));
+   return overlap;
+}
+
+void WaveClipSpectrumCache::InitializeReassignmentBuffer(
+   SpecCache& cache,
+   int copyBegin,
+   int copyEnd,
+   size_t numPixels,
+   size_t nBins)
+{
+   // The reused portion must be at one edge of the cache.
+   wxASSERT(
+      (copyBegin >= 0 && copyEnd == (int)numPixels) ||
+      (copyBegin == 0 && copyEnd <= (int)numPixels)
+   );
+
+   const int zeroBegin =
+      copyBegin > 0 ? 0 : copyEnd - copyBegin;
+
+   const int zeroEnd =
+      copyBegin > 0 ? copyBegin : numPixels;
+
+   memset(
+      &cache.freq[nBins * zeroBegin],
+      0,
+      nBins * (zeroEnd - zeroBegin) * sizeof(float));
+}
+
 
 bool WaveClipSpectrumCache::GetSpectrogram(
    const WaveChannelInterval &clip,
@@ -618,15 +720,12 @@ bool WaveClipSpectrumCache::GetSpectrogram(
 
    //Trim offset comparison failure forces spectrogram cache rebuild
    //and skip copying "unchanged" data after clip border was trimmed.
-   bool match = mSpecCache && mSpecCache->leftTrim == clip.GetTrimLeft() &&
-                mSpecCache->rightTrim == clip.GetTrimRight() &&
-                mSpecCache->len > 0 &&
-                mSpecCache->Matches(mDirty, samplesPerPixel, settings);
+   bool match = IsCacheValid(mSpecCache.get(), clip, samplesPerPixel, settings);
 
    if (match && mSpecCache->start == t0 && mSpecCache->len >= numPixels)
    {
-      spectrogram = &mSpecCache->freq[0];
-      where = &mSpecCache->where[0];
+      spectrogram = mSpecCache->freq.data();
+      where = mSpecCache->where.data();
 
       return false;  //hit cache completely
    }
@@ -640,7 +739,8 @@ bool WaveClipSpectrumCache::GetSpectrogram(
    // If the window size changed, we know there is nothing to be copied
    // If we zoomed out, or resized, we can give up memory. But not too much -
    // up to 2x extra is needed at the end of the clip to prevent stutter.
-   if (mSpecCache->freq.capacity() > 2.1 * mSpecCache->freq.size() ||
+   constexpr double kMaxCacheCapacityRatio = 2.1;
+   if (mSpecCache->freq.capacity() > kMaxCacheCapacityRatio * mSpecCache->freq.size() ||
        mSpecCache->windowSize*mSpecCache->zeroPaddingFactor <
        settings.WindowSize()*settings.ZeroPaddingFactor())
    {
@@ -648,20 +748,17 @@ bool WaveClipSpectrumCache::GetSpectrogram(
       mSpecCache = std::make_unique<SpecCache>();
    }
 
-   int oldX0 = 0;
-   double correction = 0.0;
+  
+   struct CacheOverlap overlap;
+   overlap.oldX0 = 0;
+   overlap.correction = 0.0;
+   overlap.copyBegin = 0;
+   overlap.copyBegin = 0;
 
-   int copyBegin = 0, copyEnd = 0;
    if (match) {
-      WaveClipUIUtilities::findCorrection(
-         mSpecCache->where, mSpecCache->len, numPixels, t0, sampleRate,
-         stretchRatio, samplesPerPixel, oldX0, correction);
-      // Remember our first pixel maps to oldX0 in the old cache,
-      // possibly out of bounds.
-      // For what range of pixels can data be copied?
-      int oldLen = mSpecCache->len;
-      copyBegin = std::min(oldLen, std::max(0, -oldX0));
-      copyEnd = std::min(oldLen, std::max(0, oldLen - oldX0));
+      overlap = CalculateCacheOverlap(
+         *mSpecCache, numPixels, t0,
+         sampleRate, stretchRatio, samplesPerPixel);
    }
 
    mSpecCache->leftTrim = clip.GetTrimLeft();
@@ -671,12 +768,12 @@ bool WaveClipSpectrumCache::GetSpectrogram(
    // Optimization: if the old cache is good and overlaps
    // with the current one, re-use as much of the cache as
    // possible
-   if (copyEnd > copyBegin)
+   if (overlap.copyEnd > overlap.copyBegin)
    {
       // memmove is required since dst/src overlap
-      memmove(&mSpecCache->freq[nBins * copyBegin],
-               &mSpecCache->freq[nBins * (copyBegin + oldX0)],
-               nBins * (copyEnd - copyBegin) * sizeof(float));
+      memmove(&mSpecCache->freq[nBins * overlap.copyBegin],
+               &mSpecCache->freq[nBins * (overlap.copyBegin + overlap.oldX0)],
+               nBins * (overlap.copyEnd - overlap.copyBegin) * sizeof(float));
    }
 
    // Resize the cache, keep the contents unchanged.
@@ -685,32 +782,21 @@ bool WaveClipSpectrumCache::GetSpectrogram(
    // Reassignment accumulates, so it needs a zeroed buffer
    if (settings.algorithm == SpectrogramSettings::algReassignment)
    {
-      // The cache could theoretically copy from the middle, resulting
-      // in two regions to update. This won't happen in zoom, since
-      // old cache doesn't match. It won't happen in resize, since the
-      // spectrum view is pinned to left side of window.
-      wxASSERT(
-         (copyBegin >= 0 && copyEnd == (int)numPixels) || // copied the end
-         (copyBegin == 0 && copyEnd <= (int)numPixels)    // copied the beginning
-      );
-
-      int zeroBegin = copyBegin > 0 ? 0 : copyEnd-copyBegin;
-      int zeroEnd = copyBegin > 0 ? copyBegin : numPixels;
-
-      memset(&mSpecCache->freq[nBins*zeroBegin], 0, nBins*(zeroEnd-zeroBegin)*sizeof(float));
+      InitializeReassignmentBuffer(
+         *mSpecCache, overlap.copyBegin, overlap.copyEnd, numPixels, nBins);
    }
 
    // purposely offset the display 1/2 sample to the left (as compared
    // to waveform display) to properly center response of the FFT
    constexpr auto addBias = true;
    WaveClipUIUtilities::fillWhere(
-      mSpecCache->where, numPixels, addBias, correction, t0, sampleRate,
+      mSpecCache->where, numPixels, addBias, overlap.correction, t0, sampleRate,
       stretchRatio, samplesPerPixel);
 
-   mSpecCache->Populate(settings, clip, copyBegin, copyEnd, numPixels, pixelsPerSecond);
+   mSpecCache->Populate(settings, clip, overlap.copyBegin, overlap.copyEnd, numPixels, pixelsPerSecond);
    mSpecCache->dirty = mDirty;
-   spectrogram = &mSpecCache->freq[0];
-   where = &mSpecCache->where[0];
+   spectrogram = mSpecCache->freq.data();
+   where = mSpecCache->where.data();
 
    return true;
 }
@@ -756,9 +842,9 @@ void WaveClipSpectrumCache::Invalidate()
       pCache = std::make_unique<SpecCache>();
 }
 
-void WaveClipSpectrumCache::MakeStereo(WaveClipListener &&other, bool)
+void WaveClipSpectrumCache::MakeStereo(WaveClipListener &&other, bool /*aligned*/)
 {
-   auto pOther = dynamic_cast<WaveClipSpectrumCache *>(&other);
+   auto* pOther = dynamic_cast<WaveClipSpectrumCache *>(&other);
    assert(pOther); // precondition
    mSpecCaches.push_back(move(pOther->mSpecCaches[0]));
    mSpecPxCaches.push_back(move(pOther->mSpecPxCaches[0]));
