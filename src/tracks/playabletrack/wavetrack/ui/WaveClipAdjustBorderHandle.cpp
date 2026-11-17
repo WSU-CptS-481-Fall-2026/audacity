@@ -32,6 +32,9 @@
 
 namespace {
 
+   //! Border handles are active only in this top fraction of the clip's height
+   constexpr double AdjustHandleHeightFraction = 0.3;
+
    void TrimLeftTo(WaveTrack::Interval& interval, double t)
    {
       interval.TrimLeftTo(t);
@@ -374,6 +377,41 @@ wxRect WaveClipAdjustBorderHandle::AdjustPolicy::DrawingArea(TrackPanelDrawingCo
    return rect;
 }
 
+namespace {
+
+//! Clips of a track that are drawn with details, in track order, together with
+//! their horizontal pixel extents (`intervals[i]` has the extent `edges[i]`)
+struct VisibleClips
+{
+   std::vector<std::shared_ptr<WaveTrack::Interval>> intervals;
+   std::vector<WaveClipBorderHit::ClipEdges> edges;
+};
+
+VisibleClips CollectVisibleClips(
+   WaveTrack& track, const ZoomInfo& zoomInfo, const wxRect& rect)
+{
+   VisibleClips result;
+   for (const auto& interval : track.Intervals()) {
+      if (!WaveChannelView::ClipDetailsVisible(*interval, zoomInfo, rect))
+         continue;
+
+      const auto clipRect = ClipParameters::GetClipRect(*interval, zoomInfo, rect);
+      result.intervals.push_back(interval);
+      result.edges.push_back({ clipRect.GetLeft(), clipRect.GetRight() });
+   }
+   return result;
+}
+
+//! Pick the operation that moves the given border of an interval
+AdjustClipBorder::AdjustHandler
+MakeAdjustHandler(bool isStretchMode, bool adjustLeftBorder)
+{
+   if (isStretchMode)
+      return adjustLeftBorder ? StretchLeftTo : StretchRightTo;
+   return adjustLeftBorder ? TrimLeftTo : TrimRightTo;
+}
+} // namespace
+
 UIHandlePtr WaveClipAdjustBorderHandle::HitAnywhere(
    std::weak_ptr<WaveClipAdjustBorderHandle>& holder,
    const std::shared_ptr<WaveTrack>& waveTrack,
@@ -386,69 +424,23 @@ UIHandlePtr WaveClipAdjustBorderHandle::HitAnywhere(
 
    auto& zoomInfo = ViewInfo::Get(*pProject);
 
-   std::shared_ptr<WaveTrack::Interval> leftInterval;
-   std::shared_ptr<WaveTrack::Interval> rightInterval;
-
-   //Test left and right boundaries of each clip
-   //to determine which kind of adjustment is
-   //more appropriate
-   for (const auto &interval : waveTrack->Intervals()) {
-      const auto& clip = *interval;
-      if(!WaveChannelView::ClipDetailsVisible(clip, zoomInfo, rect))
-         continue;
-
-      auto clipRect = ClipParameters::GetClipRect(clip, zoomInfo, rect);
-
-      //Skip clips that are under 10px
-      if (clipRect.GetWidth() < 10)
-         continue;
-         
-      if(std::abs(px - clipRect.GetLeft()) <= BoundaryThreshold * 2)
-         rightInterval = interval;
-      else if (std::abs(px - clipRect.GetRight()) <= BoundaryThreshold * 2)
-         leftInterval = interval;
-   }
+   //Decide which clip border (if any) is under the pointer
+   const auto visible = CollectVisibleClips(*waveTrack, zoomInfo, rect);
+   const auto target = WaveClipBorderHit::FindAdjustTarget(visible.edges, px);
 
    std::shared_ptr<WaveTrack::Interval> adjustedInterval;
    bool adjustLeftBorder {false};
-   if (leftInterval && rightInterval)
+   if (target)
    {
-      //between adjacent clips
-      if(ClipParameters::GetClipRect(*leftInterval, zoomInfo, rect).GetRight() > px)
-      {
-         adjustedInterval = leftInterval;
-         adjustLeftBorder = false;
-      }
-      else
-      {
-         adjustedInterval = rightInterval;
-         adjustLeftBorder = true;
-      }
-   }
-   else
-   {
-      adjustedInterval = leftInterval ? leftInterval : rightInterval;
-      if (adjustedInterval)
-      {
-         //single clip case, determine the border,
-         //hit testing area differs from one
-         //used for general case
-         const auto clipRect = ClipParameters::GetClipRect(*adjustedInterval, zoomInfo, rect);
-         if (std::abs(px - clipRect.GetLeft()) <= BoundaryThreshold)
-            adjustLeftBorder = true;
-         else if (std::abs(px - clipRect.GetRight()) <= BoundaryThreshold)
-            adjustLeftBorder = false;
-         else
-            adjustedInterval.reset();
-      }
+      adjustedInterval = visible.intervals[target->clipIndex];
+      adjustLeftBorder = target->adjustLeftBorder;
    }
 
    if(adjustedInterval)
    {
       const auto isStretchMode = state.state.AltDown();
-      AdjustClipBorder::AdjustHandler adjustHandler = isStretchMode
-         ? (adjustLeftBorder ? StretchLeftTo : StretchRightTo)
-         : (adjustLeftBorder ? TrimLeftTo : TrimRightTo);
+      const auto adjustHandler =
+         MakeAdjustHandler(isStretchMode, adjustLeftBorder);
 
       std::unique_ptr<AdjustPolicy> policy =
          std::make_unique<AdjustClipBorder>(
@@ -481,7 +473,7 @@ UIHandlePtr WaveClipAdjustBorderHandle::HitTest(std::weak_ptr<WaveClipAdjustBord
     auto py = state.state.m_y;
 
     if (py >= rect.GetTop() &&
-        py <= (rect.GetTop() + static_cast<int>(rect.GetHeight() * 0.3)))
+        py <= (rect.GetTop() + static_cast<int>(rect.GetHeight() * AdjustHandleHeightFraction)))
     {
         return HitAnywhere(holder,
             waveChannel->GetTrack().SharedPointer<WaveTrack>(),

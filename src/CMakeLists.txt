@@ -731,6 +731,7 @@ set( SOURCES
       tracks/playabletrack/wavetrack/ui/WaveChannelView.h
       tracks/playabletrack/wavetrack/ui/WaveClipAdjustBorderHandle.h
       tracks/playabletrack/wavetrack/ui/WaveClipAdjustBorderHandle.cpp
+      tracks/playabletrack/wavetrack/ui/WaveClipBorderHit.h
       tracks/playabletrack/wavetrack/ui/WaveClipUIUtilities.cpp
       tracks/playabletrack/wavetrack/ui/WaveClipUIUtilities.h
       tracks/playabletrack/wavetrack/ui/WaveformAppearance.cpp
@@ -1467,3 +1468,7 @@ endforeach()
 
 #propagate collected edgets to root CMakeLists.txt
 set( GRAPH_EDGES "${GRAPH_EDGES}" PARENT_SCOPE )
+
+if( ${_OPT}has_tests )
+   add_subdirectory( tracks/playabletrack/wavetrack/ui/tests )
+endif()
