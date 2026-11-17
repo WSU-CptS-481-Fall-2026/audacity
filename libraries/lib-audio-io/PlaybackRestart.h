@@ -43,6 +43,20 @@ inline PlaybackSnapshot CapturePlaybackSnapshot(const PlaybackRestartHost& host)
    return { wasPlaying, wasLooping, resumeTime };
 }
 
+//! Whether playback must be restarted after the tracks were modified
+/*!
+ True only if the modification succeeded, playback was running (and not
+ paused) before it, and is still running now. Playback may have ended while
+ the tracks were being modified. `host.Playing()` is queried only if the
+ first two conditions hold.
+ */
+inline bool ShouldRestart(
+   const PlaybackSnapshot& snapshot, bool modificationSucceeded,
+   const PlaybackRestartHost& host)
+{
+   return modificationSucceeded && snapshot.wasPlaying && host.Playing();
+}
+
 //! Run `modifyTracks`; if it succeeded and playback was running (not paused),
 //! restart playback from where it was, in the same (looped or not) mode.
 /*!
@@ -55,8 +69,7 @@ inline bool RestartPlaybackAfter(
 
    const bool success = modifyTracks();
 
-   // Playback may have ended while the tracks were being modified
-   if (success && snapshot.wasPlaying && host.Playing()) {
+   if (ShouldRestart(snapshot, success, host)) {
       host.Stop();
       host.Play(snapshot.resumeTime, snapshot.wasLooping);
    }
