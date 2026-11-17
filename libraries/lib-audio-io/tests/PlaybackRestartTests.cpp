@@ -128,3 +128,68 @@ TEST_CASE("RestartPlaybackAfter: propagates exceptions without restarting")
       std::runtime_error);
    REQUIRE(host.calls.empty());
 }
+
+TEST_CASE("RestartPlaybackAfter: decision truth table")
+{
+   // Every combination of the inputs the restart decision depends on.
+   // Restart happens exactly when the modification succeeded, playback was
+   // running (and not paused) before it, and is still running after it.
+   for (int bits = 0; bits < 32; ++bits) {
+      const bool playingBefore = bits & 1;
+      const bool pausedBefore = bits & 2;
+      const bool playingAfter = bits & 4;
+      const bool success = bits & 8;
+      const bool looping = bits & 16;
+
+      INFO(
+         "playingBefore=" << playingBefore << " pausedBefore=" << pausedBefore
+                          << " playingAfter=" << playingAfter
+                          << " success=" << success << " looping=" << looping);
+
+      MockHost host;
+      host.playing = playingBefore;
+      host.paused = pausedBefore;
+      host.looping = looping;
+      host.time = 4.25;
+
+      int modifyCount = 0;
+      const bool result = RestartPlaybackAfter(host, [&] {
+         ++modifyCount;
+         host.calls.push_back("modify");
+         host.playing = playingAfter;
+         return success;
+      });
+
+      const bool expectRestart =
+         success && playingBefore && !pausedBefore && playingAfter;
+
+      REQUIRE(result == success);
+      REQUIRE(modifyCount == 1);
+      if (expectRestart) {
+         REQUIRE(
+            host.calls ==
+            std::vector<std::string>{ "modify", "stop", "play" });
+         REQUIRE(host.playedFrom == 4.25);
+         REQUIRE(host.playedLooping == looping);
+      }
+      else
+         REQUIRE(host.calls == std::vector<std::string>{ "modify" });
+   }
+}
+
+TEST_CASE("RestartPlaybackAfter: pausing during the modification is not noticed")
+{
+   // Existing behaviour, recorded so that a change to it is deliberate:
+   // only the state before the modification decides, so playback that was
+   // running and got paused meanwhile is restarted.
+   MockHost host;
+   host.playing = true;
+   host.time = 1.5;
+
+   REQUIRE(RestartPlaybackAfter(host, [&] {
+      host.paused = true;
+      return true;
+   }));
+   REQUIRE(host.calls == std::vector<std::string>{ "stop", "play" });
+   REQUIRE(host.playedFrom == 1.5);
+}
