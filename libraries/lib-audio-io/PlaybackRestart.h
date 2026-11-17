@@ -26,6 +26,23 @@ public:
    virtual void Play(double startTime, bool looping) = 0;
 };
 
+//! State of playback, taken before the tracks are modified
+struct PlaybackSnapshot
+{
+   bool wasPlaying; //!< playing and not paused
+   bool wasLooping;
+   double resumeTime; //!< stream time to restart from; 0 if not playing
+};
+
+//! Read the playback state that decides whether and where to restart
+inline PlaybackSnapshot CapturePlaybackSnapshot(const PlaybackRestartHost& host)
+{
+   const bool wasPlaying = host.Playing() && !host.Paused();
+   const bool wasLooping = host.Looping();
+   const double resumeTime = wasPlaying ? host.StreamTime() : 0.0;
+   return { wasPlaying, wasLooping, resumeTime };
+}
+
 //! Run `modifyTracks`; if it succeeded and playback was running (not paused),
 //! restart playback from where it was, in the same (looped or not) mode.
 /*!
@@ -34,16 +51,14 @@ public:
 inline bool RestartPlaybackAfter(
    PlaybackRestartHost& host, const std::function<bool()>& modifyTracks)
 {
-   const bool wasPlaying = host.Playing() && !host.Paused();
-   const bool wasLooping = host.Looping();
-   const double resumeTime = wasPlaying ? host.StreamTime() : 0.0;
+   const auto snapshot = CapturePlaybackSnapshot(host);
 
    const bool success = modifyTracks();
 
    // Playback may have ended while the tracks were being modified
-   if (success && wasPlaying && host.Playing()) {
+   if (success && snapshot.wasPlaying && host.Playing()) {
       host.Stop();
-      host.Play(resumeTime, wasLooping);
+      host.Play(snapshot.resumeTime, snapshot.wasLooping);
    }
    return success;
 }
