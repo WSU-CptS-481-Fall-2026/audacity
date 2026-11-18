@@ -548,8 +548,6 @@ set( SOURCES
       import/ImportStreamDialog.h
       import/MultiFormatReader.cpp
       import/MultiFormatReader.h
-      import/RawAudioGuess.cpp
-      import/RawAudioGuess.h
       import/SpecPowerMeter.cpp
       import/SpecPowerMeter.h
       import/ImportRaw.cpp

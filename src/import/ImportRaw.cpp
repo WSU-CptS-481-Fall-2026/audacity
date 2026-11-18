@@ -37,8 +37,11 @@ and sample size to help you importing data of an unknown format.
 #include "WaveTrack.h"
 #include "ProgressDialog.h"
 
+#include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <stdint.h>
+#include <string>
 #include <vector>
 
 #include <wx/crt.h>
@@ -50,40 +53,67 @@ and sample size to help you importing data of an unknown format.
 #include <wx/stattext.h>
 #include <wx/textctrl.h>
 
-// #include "RawAudioGuess.h"
 #include "FormatClassifier.h"
 
 #include "sndfile.h"
 
+constexpr unsigned MaxRawChannels = 16;
+constexpr double MinRawRate = 100.0;
+// Highest preset sample rate supported in Audacity 2.3.0 is 384 kHz
+constexpr double MaxRawRate = 384000.0;
+
+// Settings chosen in the Import Raw dialog
+struct RawImportSettings
+{
+   int encoding{ SF_FORMAT_RAW | SF_ENDIAN_CPU | SF_FORMAT_PCM_16 };
+   unsigned channels{ 1 };
+   long long offset{ 0 };
+   double rate{ 0 };      // 0 means "use the project rate"
+   double percent{ 100. };
+};
+
+// Settings remembered between raw imports during a session
+static RawImportSettings& LastRawImportSettings()
+{
+   static RawImportSettings settings;
+   return settings;
+}
+
+// Returns the settings limited to values the importer supports
+static RawImportSettings Clamped(RawImportSettings settings)
+{
+   if (settings.channels < 1 || settings.channels > MaxRawChannels)
+      settings.channels = 1;
+   settings.offset = std::max(settings.offset, 0LL);
+   settings.percent = std::clamp(settings.percent, 0.0, 100.0);
+   settings.rate = std::clamp(settings.rate, MinRawRate, MaxRawRate);
+   return settings;
+}
+
 class ImportRawDialog final : public wxDialogWrapper {
 
-  public:
-   ImportRawDialog(wxWindow * parent, const wxString & fileName);
-   ~ImportRawDialog();
+public:
+   ImportRawDialog(wxWindow* parent, const wxString& fileName,
+      RawImportSettings& settings);
 
-   void OnOK(wxCommandEvent & event);
-   void OnCancel(wxCommandEvent & event);
-   void OnPlay(wxCommandEvent & event);
-   void OnDetect(wxCommandEvent & event);
-   void OnChoice(wxCommandEvent & event);
+   void OnOK(wxCommandEvent& event);
+   void OnCancel(wxCommandEvent& event);
+   void OnDetect(wxCommandEvent& event);
+   void OnChoice(wxCommandEvent& event);
 
-   // in and out
-   // Make static to preserve value for next raw import
-   static int mEncoding;
-   static unsigned mChannels;
-   static long long mOffset;
-   static double mRate;
-   static double mPercent;
+private:
+   // libsndfile format value for the encoding and byte order selected
+   int SelectedEncoding() const;
 
- private:
+   RawImportSettings& mSettings;
 
-   wxButton   *mOK;
-   wxChoice   *mEncodingChoice;
-   wxChoice   *mEndianChoice;
-   wxChoice   *mChannelChoice;
-   wxTextCtrl *mOffsetText;
-   wxTextCtrl *mPercentText;
-   wxComboBox *mRateText;
+   wxButton* mOK;
+   wxChoice* mEncodingChoice;
+   wxChoice* mEndianChoice;
+   wxChoice* mChannelChoice;
+   wxTextCtrl* mOffsetText;
+   wxTextCtrl* mPercentText;
+   wxComboBox* mRateText;
 
    std::vector<int> mEncodingSubtype;
 
@@ -92,19 +122,57 @@ class ImportRawDialog final : public wxDialogWrapper {
    DECLARE_EVENT_TABLE()
 };
 
-// Initial value for Import Raw dialog
-int ImportRawDialog::mEncoding = SF_FORMAT_RAW | SF_ENDIAN_CPU | SF_FORMAT_PCM_16;
-unsigned ImportRawDialog::mChannels = 1;
-long long ImportRawDialog::mOffset = 0;
-double ImportRawDialog::mRate = 0;  // -> project rate
-double ImportRawDialog::mPercent = 100.;
+// Prints libsndfile's latest error message for diagnostics
+static void PrintSndfileError(SNDFILE* sndFile)
+{
+   char str[1000];
+   sf_error_str(sndFile, str, sizeof(str));
+   wxPrintf("%s\n", str);
+}
 
+// Opens fileName as raw audio described by sndInfo, starting at offset.
+// file must stay open as long as the returned SFFile is used.
+static SFFile OpenRawSndFile(wxFile& file, const wxString& fileName,
+   SF_INFO& sndInfo, sf_count_t offset)
+{
+   SFFile sndFile;
+   if (file.Open(fileName)) {
+      // Even though there is an sf_open() that takes a filename, use the one
+      // that takes a file descriptor since wxWidgets can open a file with a
+      // Unicode name and libsndfile can't (under Windows).
+      sndFile.reset(SFCall<SNDFILE*>(
+         sf_open_fd, file.fd(), SFM_READ, &sndInfo, FALSE));
+   }
+
+   if (!sndFile) {
+      PrintSndfileError(nullptr);
+      throw FileException{ FileException::Cause::Open, fileName };
+   }
+
+   if (sf_command(sndFile.get(), SFC_SET_RAW_START_OFFSET,
+      &offset, sizeof(offset)) != 0) {
+      PrintSndfileError(sndFile.get());
+      throw FileException{ FileException::Cause::Read, fileName };
+   }
+
+   SFCall<sf_count_t>(sf_seek, sndFile.get(), 0, SEEK_SET);
+   return sndFile;
+}
+
+// Copies one channel out of interleaved frames
+template<typename Sample>
+static void DeinterleaveChannel(const Sample* interleaved, Sample* channelOut,
+   size_t frames, size_t numChannels, size_t channel)
+{
+   for (size_t j = 0; j < frames; ++j)
+      channelOut[j] = interleaved[numChannels * j + channel];
+}
 
 // This function leaves outTracks empty as an indication of error,
 // but may also throw FileException to make use of the application's
 // user visible error reporting.
-void ImportRaw(const AudacityProject &project, wxWindow *parent, const wxString &fileName,
-              WaveTrackFactory *trackFactory, TrackHolders &outTracks)
+void ImportRaw(const AudacityProject& project, wxWindow* parent, const wxString& fileName,
+   WaveTrackFactory* trackFactory, TrackHolders& outTracks)
 {
    outTracks.clear();
 
@@ -112,56 +180,29 @@ void ImportRaw(const AudacityProject &project, wxWindow *parent, const wxString 
    auto updateResult = ProgressResult::Success;
 
    {
-      // On first run, set default sample rate from project rate
-      if (ImportRawDialog::mRate < 100.)
-         ImportRawDialog::mRate = ProjectRate::Get(project).GetRate();
+      auto& settings = LastRawImportSettings();
 
-      ImportRawDialog dlog(parent, fileName);
-      dlog.ShowModal();
-      if (!dlog.GetReturnCode())
+      // On first run, set default sample rate from project rate
+      if (settings.rate < MinRawRate)
+         settings.rate = ProjectRate::Get(project).GetRate();
+
+      ImportRawDialog dlog(parent, fileName, settings);
+      if (dlog.ShowModal() != wxID_OK)
          return;
 
-      const int encoding = dlog.mEncoding;
-      unsigned numChannels = dlog.mChannels;
-      double rate = dlog.mRate;
-      sf_count_t offset = (sf_count_t)dlog.mOffset;
-      double percent = dlog.mPercent;
+      const int encoding = settings.encoding;
+      const unsigned numChannels = settings.channels;
+      const double rate = settings.rate;
+      const sf_count_t offset = static_cast<sf_count_t>(settings.offset);
+      const double percent = settings.percent;
 
       SF_INFO sndInfo = { 0 };
-      sndInfo.samplerate = (int)rate;
-      sndInfo.channels = (int)numChannels;
+      sndInfo.samplerate = static_cast<int>(rate);
+      sndInfo.channels = static_cast<int>(numChannels);
       sndInfo.format = encoding | SF_FORMAT_RAW;
 
-      wxFile f;   // will be closed when it goes out of scope
-      SFFile sndFile;
-
-      if (f.Open(fileName)) {
-         // Even though there is an sf_open() that takes a filename, use the one that
-         // takes a file descriptor since wxWidgets can open a file with a Unicode name and
-         // libsndfile can't (under Windows).
-         sndFile.reset(SFCall<SNDFILE*>(sf_open_fd, f.fd(), SFM_READ, &sndInfo, FALSE));
-      }
-
-      if (!sndFile){
-         char str[1000];
-         sf_error_str((SNDFILE *)NULL, str, 1000);
-         wxPrintf("%s\n", str);
-
-         throw FileException{ FileException::Cause::Open, fileName };
-      }
-
-
-      {
-         int result = sf_command(sndFile.get(), SFC_SET_RAW_START_OFFSET, &offset, sizeof(offset));
-         if (result != 0) {
-            char str[1000];
-            sf_error_str(sndFile.get(), str, 1000);
-            wxPrintf("%s\n", str);
-
-            throw FileException{ FileException::Cause::Read, fileName };
-         }
-      }
-      SFCall<sf_count_t>(sf_seek, sndFile.get(), 0, SEEK_SET);
+      wxFile f;   // must stay open while sndFile is in use
+      auto sndFile = OpenRawSndFile(f, fileName, sndInfo, offset);
 
       auto totalFrames =
          // fraction of a sf_count_t value
@@ -175,15 +216,19 @@ void ImportRaw(const AudacityProject &project, wxWindow *parent, const wxString 
       // the quality of the original file.
       //
 
-      const auto format = ImportUtils::ChooseFormat(
-         sf_subtype_to_effective_format(encoding));
+      const auto effectiveFormat = sf_subtype_to_effective_format(encoding);
+      const auto format = ImportUtils::ChooseFormat(effectiveFormat);
+
+      // libsndfile reads 16-bit samples as short, everything else as float
+      const sampleFormat readFormat =
+         (format == int16Sample) ? int16Sample : floatSample;
 
       trackList = trackFactory->CreateMany(numChannels, format, rate);
 
       const auto maxBlockSize = (*trackList->Any<WaveTrack>().begin())->GetMaxBlockSize();
 
-      SampleBuffer srcbuffer(maxBlockSize * numChannels, format);
-      SampleBuffer buffer(maxBlockSize, format);
+      SampleBuffer srcbuffer(maxBlockSize * numChannels, readFormat);
+      SampleBuffer buffer(maxBlockSize, readFormat);
 
       decltype(totalFrames) framescompleted = 0;
       if (totalFrames < 0) {
@@ -191,7 +236,7 @@ void ImportRaw(const AudacityProject &project, wxWindow *parent, const wxString 
          totalFrames = 0;
       }
 
-      auto msg = XO("Importing %s").Format( wxFileName::FileName(fileName).GetFullName() );
+      auto msg = XO("Importing %s").Format(wxFileName::FileName(fileName).GetFullName());
 
       /* i18n-hint: 'Raw' means 'unprocessed' here and should usually be translated.*/
       ProgressDialog progress(XO("Import Raw"), msg);
@@ -199,13 +244,15 @@ void ImportRaw(const AudacityProject &project, wxWindow *parent, const wxString 
       size_t block;
       do {
          block =
-            limitSampleBufferSize( maxBlockSize, totalFrames - framescompleted );
+            limitSampleBufferSize(maxBlockSize, totalFrames - framescompleted);
 
          sf_count_t sf_result;
-         if (format == int16Sample)
-            sf_result = SFCall<sf_count_t>(sf_readf_short, sndFile.get(), (short *)srcbuffer.ptr(), block);
+         if (readFormat == int16Sample)
+            sf_result = SFCall<sf_count_t>(sf_readf_short, sndFile.get(),
+               reinterpret_cast<short*>(srcbuffer.ptr()), block);
          else
-            sf_result = SFCall<sf_count_t>(sf_readf_float, sndFile.get(), (float *)srcbuffer.ptr(), block);
+            sf_result = SFCall<sf_count_t>(sf_readf_float, sndFile.get(),
+               reinterpret_cast<float*>(srcbuffer.ptr()), block);
 
          if (sf_result >= 0) {
             block = sf_result;
@@ -219,23 +266,22 @@ void ImportRaw(const AudacityProject &project, wxWindow *parent, const wxString 
          if (block) {
             size_t c = 0;
             ImportUtils::ForEachChannel(*trackList, [&](auto& channel)
-            {
-               if (format == int16Sample) {
-                  for (size_t j = 0; j < block; ++j)
-                     ((short *)buffer.ptr())[j] =
-                     ((short *)srcbuffer.ptr())[numChannels * j + c];
-               }
-               else {
-                  for (size_t j = 0; j < block; ++j)
-                     ((float *)buffer.ptr())[j] =
-                     ((float *)srcbuffer.ptr())[numChannels * j + c];
-               }
+               {
+                  if (readFormat == int16Sample)
+                     DeinterleaveChannel(
+                        reinterpret_cast<const short*>(srcbuffer.ptr()),
+                        reinterpret_cast<short*>(buffer.ptr()),
+                        block, numChannels, c);
+                  else
+                     DeinterleaveChannel(
+                        reinterpret_cast<const float*>(srcbuffer.ptr()),
+                        reinterpret_cast<float*>(buffer.ptr()),
+                        block, numChannels, c);
 
-               channel.AppendBuffer(buffer.ptr(),
-                  ((format == int16Sample) ? int16Sample : floatSample), block,
-                  1, sf_subtype_to_effective_format(encoding));
-               ++c;
-            });
+                  channel.AppendBuffer(buffer.ptr(), readFormat, block,
+                     1, effectiveFormat);
+                  ++c;
+               });
             framescompleted += block;
          }
 
@@ -245,7 +291,7 @@ void ImportRaw(const AudacityProject &project, wxWindow *parent, const wxString 
          );
          if (updateResult != ProgressResult::Success)
             break;
-         
+
       } while (block > 0 && framescompleted < totalFrames);
    }
 
@@ -256,20 +302,20 @@ void ImportRaw(const AudacityProject &project, wxWindow *parent, const wxString 
 }
 
 
-// Get endian choice from SF_FORMAT
-static int getEndianChoice(int sfFormat) {
-   switch (sfFormat & SF_FORMAT_ENDMASK)
-   {
-      default:
-      case SF_ENDIAN_FILE:
-         return 0;
-      case SF_ENDIAN_LITTLE:
-         return 1;
-      case SF_ENDIAN_BIG:
-         return 2;
-      case SF_ENDIAN_CPU:
-         return 3;
-   }
+// Byte orders offered in the dialog, in the order of its choices
+static const int kEndianFormats[] = {
+   SF_ENDIAN_FILE, SF_ENDIAN_LITTLE, SF_ENDIAN_BIG, SF_ENDIAN_CPU
+};
+
+// Index of the dialog's byte-order choice for a libsndfile format value
+static int getEndianChoice(int sfFormat)
+{
+   const auto endian = sfFormat & SF_FORMAT_ENDMASK;
+   const auto it = std::find(
+      std::begin(kEndianFormats), std::end(kEndianFormats), endian);
+   if (it == std::end(kEndianFormats))
+      return 0;
+   return static_cast<int>(std::distance(std::begin(kEndianFormats), it));
 }
 
 
@@ -279,25 +325,25 @@ static int getEndianChoice(int sfFormat) {
 
 enum {
    ChoiceID = 9000,
-   PlayID,
    DetectID,
 };
 
 BEGIN_EVENT_TABLE(ImportRawDialog, wxDialogWrapper)
-   EVT_BUTTON(wxID_OK, ImportRawDialog::OnOK)
-   EVT_BUTTON(wxID_CANCEL, ImportRawDialog::OnCancel)
-   EVT_BUTTON(PlayID, ImportRawDialog::OnPlay)
-   EVT_BUTTON(DetectID, ImportRawDialog::OnDetect)
-   EVT_CHOICE(ChoiceID, ImportRawDialog::OnChoice)
+EVT_BUTTON(wxID_OK, ImportRawDialog::OnOK)
+EVT_BUTTON(wxID_CANCEL, ImportRawDialog::OnCancel)
+EVT_BUTTON(DetectID, ImportRawDialog::OnDetect)
+EVT_CHOICE(ChoiceID, ImportRawDialog::OnChoice)
 END_EVENT_TABLE()
 
-ImportRawDialog::ImportRawDialog(wxWindow * parent, const wxString & fileName)
-:  wxDialogWrapper(parent, wxID_ANY, XO("Import Raw Data"),
-            wxDefaultPosition, wxDefaultSize,
-            wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER),
+ImportRawDialog::ImportRawDialog(wxWindow* parent, const wxString& fileName,
+   RawImportSettings& settings)
+   : wxDialogWrapper(parent, wxID_ANY, XO("Import Raw Data"),
+      wxDefaultPosition, wxDefaultSize,
+      wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER),
+   mSettings(settings),
    mFileName(fileName)
 {
-   wxASSERT(0 < mChannels && mChannels <= 16);
+   wxASSERT(0 < mSettings.channels && mSettings.channels <= MaxRawChannels);
 
    SetName();
 
@@ -322,9 +368,9 @@ ImportRawDialog::ImportRawDialog(wxWindow * parent, const wxString & fileName)
 
       if (sf_format_check(&info)) {
          mEncodingSubtype.push_back(subtype);
-         encodings.push_back( Verbatim( sf_encoding_index_name(i) ) );
+         encodings.push_back(Verbatim(sf_encoding_index_name(i)));
 
-         if ((mEncoding & SF_FORMAT_SUBMASK) == subtype)
+         if ((mSettings.encoding & SF_FORMAT_SUBMASK) == subtype)
             selection = mEncodingSubtype.size() - 1;
       }
    }
@@ -344,14 +390,14 @@ ImportRawDialog::ImportRawDialog(wxWindow * parent, const wxString & fileName)
       XO("Default endianness") ,
    };
 
-   int endian = getEndianChoice(mEncoding);
+   int endian = getEndianChoice(mSettings.encoding);
 
    TranslatableStrings chans{
       XO("1 Channel (Mono)") ,
       XO("2 Channels (Stereo)") ,
    };
-   for (int i = 2; i < 16; i++) {
-      chans.push_back( XO("%d Channels").Format( i + 1 ) );
+   for (int i = 2; i < static_cast<int>(MaxRawChannels); i++) {
+      chans.push_back(XO("%d Channels").Format(i + 1));
    }
 
    S.StartVerticalLay(false);
@@ -360,14 +406,14 @@ ImportRawDialog::ImportRawDialog(wxWindow * parent, const wxString & fileName)
       S.StartTwoColumn();
       {
          mEncodingChoice = S.Id(ChoiceID).AddChoice(XXO("Encoding:"),
-                                                    encodings,
-                                                    selection);
+            encodings,
+            selection);
          mEndianChoice = S.Id(ChoiceID).AddChoice(XXO("Byte order:"),
-                                                  endians,
-                                                  endian);
+            endians,
+            endian);
          mChannelChoice = S.Id(ChoiceID).AddChoice(XXO("Channels:"),
-                                                   chans,
-                                                   mChannels - 1);
+            chans,
+            mSettings.channels - 1);
       }
       S.EndTwoColumn();
 
@@ -377,14 +423,14 @@ ImportRawDialog::ImportRawDialog(wxWindow * parent, const wxString & fileName)
          // Offset text
          /* i18n-hint: (noun)*/
          mOffsetText = S.AddTextBox(XXO("Start offset:"),
-                                    wxString::Format(wxT("%d"), mOffset),
-                                    12);
+            wxString(std::to_string(mSettings.offset)),
+            12);
          S.AddUnits(XO("bytes"));
 
          // Percent text
          mPercentText = S.AddTextBox(XXO("Amount to import:"),
-                                     wxT("100"),
-                                     12);
+            wxT("100"),
+            12);
          S.AddUnits(XO("%"));
 
          // Rate text
@@ -396,8 +442,8 @@ ImportRawDialog::ImportRawDialog(wxWindow * parent, const wxString & fileName)
 
          /* i18n-hint: (noun)*/
          mRateText = S.AddCombo(XXO("Sample rate:"),
-                                wxString::Format(wxT("%d"), (int)mRate),
-                                rates);
+            wxString::Format(wxT("%d"), static_cast<int>(mSettings.rate)),
+            rates);
          /* i18n-hint: This is the abbreviation for "Hertz", or
             cycles per second. */
          S.AddUnits(XO("Hz"));
@@ -410,17 +456,13 @@ ImportRawDialog::ImportRawDialog(wxWindow * parent, const wxString & fileName)
          /* i18n-hint: Guess format of raw file */
          S.Id(DetectID).AddButton(XXO("Detect"));
 
-         //
-         // Preview Pane goes here
-         //
-
          S.AddStandardButtons();
       }
       S.EndTwoColumn();
 
       // Find the OK button, and change its text to 'Import'.
       // We MUST set mOK because it is used later.
-      mOK = (wxButton *)wxWindow::FindWindowById(wxID_OK, this);
+      mOK = static_cast<wxButton*>(wxWindow::FindWindowById(wxID_OK, this));
       mOK->SetLabel(_("&Import"));
    }
    S.EndVerticalLay();
@@ -431,88 +473,73 @@ ImportRawDialog::ImportRawDialog(wxWindow * parent, const wxString & fileName)
    Centre(wxBOTH);
 }
 
-ImportRawDialog::~ImportRawDialog()
+int ImportRawDialog::SelectedEncoding() const
 {
+   return mEncodingSubtype[mEncodingChoice->GetSelection()]
+      | kEndianFormats[mEndianChoice->GetSelection()];
 }
 
-void ImportRawDialog::OnOK(wxCommandEvent & WXUNUSED(event))
+void ImportRawDialog::OnOK(wxCommandEvent& WXUNUSED(event))
 {
-   long long l;
+   RawImportSettings chosen = mSettings;
+   chosen.encoding = SelectedEncoding();
+   chosen.channels = mChannelChoice->GetSelection() + 1;
 
-   mEncoding = mEncodingSubtype[mEncodingChoice->GetSelection()];
-   mEncoding += (mEndianChoice->GetSelection() * 0x10000000);
-   mChannels = mChannelChoice->GetSelection() + 1;
-   mOffsetText->GetValue().ToLongLong(&l);
-   mOffset = l;
-   mPercentText->GetValue().ToDouble(&mPercent);
-   mRateText->GetValue().ToDouble(&mRate);
+   long long offset = 0;   // stays 0 if the text is not a number
+   mOffsetText->GetValue().ToLongLong(&offset);
+   chosen.offset = offset;
 
-   if (mChannels < 1 || mChannels > 16)
-      mChannels = 1;
-   if (mOffset < 0)
-      mOffset = 0;
-   if (mPercent < 0.0)
-      mPercent = 0.0;
-   if (mPercent > 100.0)
-      mPercent = 100.0;
-   if (mRate < 100.0)
-      mRate = 100.0;
-   // Highest preset sample rate supported in Audacity 2.3.0 is 384 kHz
-   if (mRate > 384000.0)
-      mRate = 384000.0;
+   mPercentText->GetValue().ToDouble(&chosen.percent);
+   mRateText->GetValue().ToDouble(&chosen.rate);
 
-   EndModal(true);
+   mSettings = Clamped(chosen);
+
+   EndModal(wxID_OK);
 }
 
-void ImportRawDialog::OnCancel(wxCommandEvent & WXUNUSED(event))
+void ImportRawDialog::OnCancel(wxCommandEvent& WXUNUSED(event))
 {
-   EndModal(false);
+   EndModal(wxID_CANCEL);
 }
 
-void ImportRawDialog::OnPlay(wxCommandEvent & WXUNUSED(event))
-{
-}
-
-void ImportRawDialog::OnDetect(wxCommandEvent & event)
+void ImportRawDialog::OnDetect(wxCommandEvent& event)
 {
    try {
       // Yes, FormatClassifier currently handles filenames in UTF8 format only, that's a TODO ...
       FormatClassifier theClassifier(mFileName.utf8_str());
-      mEncoding = theClassifier.GetResultFormatLibSndfile();
-      mChannels = theClassifier.GetResultChannels();
-   } catch (...) {
+      mSettings.encoding = theClassifier.GetResultFormatLibSndfile();
+      mSettings.channels = theClassifier.GetResultChannels();
+   }
+   catch (...) {
       // Something went wrong in FormatClassifier, abort.
       return;
    }
 
    int selection = 0;
-   auto iter = std::find(mEncodingSubtype.begin(), mEncodingSubtype.end(), mEncoding & SF_FORMAT_SUBMASK);
+   auto iter = std::find(mEncodingSubtype.begin(), mEncodingSubtype.end(),
+      mSettings.encoding & SF_FORMAT_SUBMASK);
    if (iter != mEncodingSubtype.end())   // subtype found
-       selection = std::distance(mEncodingSubtype.begin(), iter);
+      selection = std::distance(mEncodingSubtype.begin(), iter);
 
-   int endian = getEndianChoice(mEncoding);
+   int endian = getEndianChoice(mSettings.encoding);
 
    mEncodingChoice->SetSelection(selection);
    mEndianChoice->SetSelection(endian);
-   mChannelChoice->SetSelection(mChannels - 1);
+   mChannelChoice->SetSelection(mSettings.channels - 1);
 
    OnChoice(event);
 }
 
-void ImportRawDialog::OnChoice(wxCommandEvent & WXUNUSED(event))
+void ImportRawDialog::OnChoice(wxCommandEvent& WXUNUSED(event))
 {
-   SF_INFO info;
+   SF_INFO info = { 0 };
 
-   memset(&info, 0, sizeof(SF_INFO));
+   mSettings.encoding = SelectedEncoding();
 
-   mEncoding = mEncodingSubtype[mEncodingChoice->GetSelection()];
-   mEncoding += (mEndianChoice->GetSelection() * 0x10000000);
-
-   info.format = mEncoding | SF_FORMAT_RAW;
+   info.format = mSettings.encoding | SF_FORMAT_RAW;
    info.channels = mChannelChoice->GetSelection() + 1;
    info.samplerate = 44100;
 
-   //mOK = (wxButton *)wxWindow::FindWindowById(wxID_OK, this);
    if (sf_format_check(&info)) {
       mOK->Enable(true);
       return;
