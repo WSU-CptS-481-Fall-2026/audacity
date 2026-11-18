@@ -161,7 +161,7 @@ void LV2Editor::Disconnect()
    // Disconnect the plain UI output meters
    if (!mPlainUIControls.empty()) {
       size_t p = 0;
-      for (auto &port : mPorts.mControlPorts) {
+      for (const auto &port : mPorts.mControlPorts) {
          if (!port->mIsInput)
             if (auto &pMeter = mPlainUIControls[p].meter) {
                pMeter->Disconnect();
@@ -200,34 +200,20 @@ std::shared_ptr<SuilHost> LV2Editor::GetSuilHost()
    return result;
 }
 
-bool LV2Editor::BuildFancy(
-   std::unique_ptr<LV2Wrapper> pWrapper, const EffectSettings &settings)
+void LV2Editor::FindSupportedUI(
+   LilvUIs* uis, const char* nativeType,
+   const LilvUI*& ui, const LilvNode*& uiType)
 {
-   assert(pWrapper);
-   auto &wrapper = *pWrapper;
-   mpWrapper = move(pWrapper);
    using namespace LV2Symbols;
-   // Set the native UI type
-   const char *nativeType =
-#if defined(__WXGTK3__)
-      LV2_UI__Gtk3UI;
-#elif defined(__WXGTK__)
-      LV2_UI__GtkUI;
-#elif defined(__WXMSW__)
-      LV2_UI__WindowsUI;
-#elif defined(__WXMAC__)
-      LV2_UI__CocoaUI;
-#endif
 
    // Determine if the plugin has a supported UI
-   const LilvUI *ui = nullptr;
-   const LilvNode *uiType = nullptr;
-   using LilvUIsPtr = Lilv_ptr<LilvUIs, lilv_uis_free>;
-   LilvUIsPtr uis{ lilv_plugin_get_uis(&mPlug) };
+   ui = nullptr;
+   uiType = nullptr;
+
    if (uis) {
       if (LilvNodePtr containerType{ lilv_new_uri(gWorld, nativeType) }) {
-         LILV_FOREACH(uis, iter, uis.get()) {
-            ui = lilv_uis_get(uis.get(), iter);
+         LILV_FOREACH(uis, iter, uis) {
+            ui = lilv_uis_get(uis, iter);
             if (lilv_ui_is_supported(ui,
                suil_ui_supported, containerType.get(), &uiType))
                break;
@@ -242,8 +228,8 @@ bool LV2Editor::BuildFancy(
 
    // Check for other supported UIs
    if (!ui && uis) {
-      LILV_FOREACH(uis, iter, uis.get()) {
-         ui = lilv_uis_get(uis.get(), iter);
+      LILV_FOREACH(uis, iter, uis) {
+         ui = lilv_uis_get(uis, iter);
          if (lilv_ui_is_a(ui, node_ExternalUI) || lilv_ui_is_a(ui, node_ExternalUIOld)) {
             uiType = node_ExternalUI;
             break;
@@ -251,6 +237,115 @@ bool LV2Editor::BuildFancy(
          ui = NULL;
       }
    }
+}
+
+void LV2Editor::SetupExternalUI()
+{
+   mParent->SetMinSize(wxDefaultSize);
+   mTimer.mExternalWidget = static_cast<LV2_External_UI_Widget*>(
+      suil_instance_get_widget(mUI.mSuilInstance.get()));
+   mTimer.Start(20);
+   LV2_EXTERNAL_UI_SHOW(mTimer.mExternalWidget);
+}
+
+bool LV2Editor::SetupNativeUI(bool noResize)
+{
+   const auto widget = static_cast<WXWidget>(
+      suil_instance_get_widget(mUI.mSuilInstance.get()));
+
+#if defined(__WXGTK__)
+   // Needed by some plugins (e.g., Invada) to ensure the display is fully
+   // populated.
+   gtk_widget_show_all(widget);
+
+   // See note at size_request()
+   g_signal_connect(widget, "size-request", G_CALLBACK(LV2Editor::size_request), this);
+#endif
+
+   wxWindowPtr< NativeWindow > pNativeWin{ safenew NativeWindow() };
+   if (!pNativeWin->Create(mParent, widget))
+      return false;
+   mUI.mNativeWin = pNativeWin;
+   pNativeWin->Bind(wxEVT_SIZE, &LV2Editor::OnSize, this);
+
+   // The plugin called the LV2UI_Resize::ui_resize function to set the size before
+   // the native window was created, so set the size now.
+   if (mNativeWinInitialSize != wxDefaultSize)
+      pNativeWin->SetMinSize(mNativeWinInitialSize);
+
+   wxSizerItem* si = NULL;
+   auto vs = std::make_unique<wxBoxSizer>(wxVERTICAL);
+   auto hs = std::make_unique<wxBoxSizer>(wxHORIZONTAL);
+   if (noResize) {
+      si = hs->Add(pNativeWin.get(), 0, wxCENTER);
+      vs->Add(hs.release(), 1, wxCENTER);
+   }
+   else {
+      si = hs->Add(pNativeWin.get(), 1, wxEXPAND);
+      vs->Add(hs.release(), 1, wxEXPAND);
+   }
+   if (!si)
+      return false;
+   mParent->SetSizerAndFit(vs.release());
+
+   return true;
+}
+
+void LV2Editor::InitializeUIInterfaces()
+{
+   mUIIdleInterface = static_cast<const LV2UI_Idle_Interface*>(
+      suil_instance_extension_data(mUI.mSuilInstance.get(), LV2_UI__idleInterface));
+
+   mUIShowInterface = static_cast<const LV2UI_Show_Interface*>(
+      suil_instance_extension_data(mUI.mSuilInstance.get(), LV2_UI__showInterface));
+
+   //   if (mUIShowInterface && mUIShowInterface->show) {
+   //      mUIShowInterface->show(suil_instance_get_handle(mSuilInstance));
+   //   }
+}
+
+const char* LV2Editor::ConfigureUIContainer(
+   const LilvNode* uiType, const char* nativeType)
+{
+   using namespace LV2Symbols;
+   if (uiType == node_ExternalUI)
+      return LV2_EXTERNAL_UI__Widget;
+
+#if defined(__WXGTK__)
+   // Make sure the parent has a window
+   if (!gtk_widget_get_window(GTK_WIDGET(mParent->m_wxwindow)))
+      gtk_widget_realize(GTK_WIDGET(mParent->m_wxwindow));
+#endif
+
+   return nativeType;
+}
+
+bool LV2Editor::BuildFancy(
+   std::unique_ptr<LV2Wrapper> pWrapper, const EffectSettings& settings)
+{
+   assert(pWrapper);
+   auto& wrapper = *pWrapper;
+   mpWrapper = std::move(pWrapper);
+   using namespace LV2Symbols;
+
+   // Set the native UI type
+   const char* nativeType =
+#if defined(__WXGTK3__)
+      LV2_UI__Gtk3UI;
+#elif defined(__WXGTK__)
+      LV2_UI__GtkUI;
+#elif defined(__WXMSW__)
+      LV2_UI__WindowsUI;
+#elif defined(__WXMAC__)
+      LV2_UI__CocoaUI;
+#endif
+
+   const LilvUI* ui = nullptr;
+   const LilvNode* uiType = nullptr;
+   using LilvUIsPtr = Lilv_ptr<LilvUIs, lilv_uis_free>;
+   LilvUIsPtr uis{ lilv_plugin_get_uis(&mPlug) };
+
+   FindSupportedUI(uis.get(), nativeType, ui, uiType);
 
    // No usable UI found
    if (ui == NULL)
@@ -258,32 +353,24 @@ bool LV2Editor::BuildFancy(
 
    const auto uinode = lilv_ui_get_uri(ui);
    lilv_world_load_resource(gWorld, uinode);
-   LV2UIFeaturesList::UIHandler &handler = *this;
-   auto &instance = wrapper.GetInstance();
-   auto &features = mUIFeatures.emplace(
+   LV2UIFeaturesList::UIHandler& handler = *this;
+   auto& instance = wrapper.GetInstance();
+   auto& features = mUIFeatures.emplace(
       wrapper.GetFeatures(), &handler, uinode, &instance,
       (uiType == node_ExternalUI) ? nullptr : mParent);
    if (!features.mOk)
       return false;
 
-   const char *containerType;
-   if (uiType == node_ExternalUI)
-      containerType = LV2_EXTERNAL_UI__Widget;
-   else {
-      containerType = nativeType;
-#if defined(__WXGTK__)
-      // Make sure the parent has a window
-      if (!gtk_widget_get_window(GTK_WIDGET(mParent->m_wxwindow)))
-         gtk_widget_realize(GTK_WIDGET(mParent->m_wxwindow));
-#endif
-   }
+   const char* containerType = ConfigureUIContainer(uiType, nativeType);
+  
 
    // Set before creating the UI instance so the initial size (if any) can be captured
    mNativeWinInitialSize = wxDefaultSize;
    mNativeWinLastSize = wxDefaultSize;
 
    // Create the suil host
-   if (!(mSuilHost = GetSuilHost()))
+   mSuilHost = GetSuilHost();
+   if (!mSuilHost)
       return false;
 
 #if defined(__WXMSW__)
@@ -295,7 +382,7 @@ bool LV2Editor::BuildFancy(
    };
    const auto path = wxPathOnly(libPath.get());
    SetDllDirectory(path.c_str());
-   auto cleanup = finally([&]{ SetDllDirectory(nullptr); });
+   auto cleanup = finally([&] { SetDllDirectory(nullptr); });
 #endif
 
    LilvCharsPtr bundlePath{
@@ -307,7 +394,7 @@ bool LV2Editor::BuildFancy(
 
    // The void* that the instance passes back to our write and index
    // callback functions, which were given to suil_host_new:
-   UIHandler *pHandler = this;
+   UIHandler* pHandler = this;
 
    // Reassign the sample rate, which is pointed to by options, which are
    // pointed to by features, before we tell the library the features
@@ -323,59 +410,14 @@ bool LV2Editor::BuildFancy(
       return false;
 
    if (uiType == node_ExternalUI) {
-      mParent->SetMinSize(wxDefaultSize);
-      mTimer.mExternalWidget = static_cast<LV2_External_UI_Widget *>(
-         suil_instance_get_widget(mUI.mSuilInstance.get()));
-      mTimer.Start(20);
-      LV2_EXTERNAL_UI_SHOW(mTimer.mExternalWidget);
-   } else {
-      const auto widget = static_cast<WXWidget>(
-         suil_instance_get_widget(mUI.mSuilInstance.get()));
-
-#if defined(__WXGTK__)
-      // Needed by some plugins (e.g., Invada) to ensure the display is fully
-      // populated.
-      gtk_widget_show_all(widget);
-
-      // See note at size_request()
-      g_signal_connect(widget, "size-request", G_CALLBACK(LV2Editor::size_request), this);
-#endif
-
-      wxWindowPtr< NativeWindow > pNativeWin{ safenew NativeWindow() };
-      if (!pNativeWin->Create(mParent, widget))
+      SetupExternalUI();
+   }
+   else {
+      if (!SetupNativeUI(features.mNoResize))
          return false;
-      mUI.mNativeWin = pNativeWin;
-      pNativeWin->Bind(wxEVT_SIZE, &LV2Editor::OnSize, this);
-
-      // The plugin called the LV2UI_Resize::ui_resize function to set the size before
-      // the native window was created, so set the size now.
-      if (mNativeWinInitialSize != wxDefaultSize)
-         pNativeWin->SetMinSize(mNativeWinInitialSize);
-
-      wxSizerItem *si = NULL;
-      auto vs = std::make_unique<wxBoxSizer>(wxVERTICAL);
-      auto hs = std::make_unique<wxBoxSizer>(wxHORIZONTAL);
-      if (features.mNoResize) {
-         si = hs->Add(pNativeWin.get(), 0, wxCENTER);
-         vs->Add(hs.release(), 1, wxCENTER);
-      } else {
-         si = hs->Add(pNativeWin.get(), 1, wxEXPAND);
-         vs->Add(hs.release(), 1, wxEXPAND);
-      }
-      if (!si)
-         return false;
-      mParent->SetSizerAndFit(vs.release());
    }
 
-   mUIIdleInterface = static_cast<const LV2UI_Idle_Interface *>(
-      suil_instance_extension_data(mUI.mSuilInstance.get(), LV2_UI__idleInterface));
-
-   mUIShowInterface = static_cast<const LV2UI_Show_Interface *>(
-      suil_instance_extension_data(mUI.mSuilInstance.get(), LV2_UI__showInterface));
-
-//   if (mUIShowInterface && mUIShowInterface->show) {
-//      mUIShowInterface->show(suil_instance_get_handle(mSuilInstance));
-//   }
+   InitializeUIInterfaces();
 
 #ifdef __WXMAC__
 #ifdef __WX_EVTLOOP_BUSY_WAITING__
@@ -386,9 +428,256 @@ bool LV2Editor::BuildFancy(
    return true;
 }
 
+
+void LV2Editor::BuildDurationControl(wxScrolledWindow* w, wxSizer* innerSizer,const EffectSettings& settings)
+{
+   if (mType != EffectTypeGenerate)
+      return;
+
+   // Add the duration control, if a generator
+   auto sizer = std::make_unique<wxBoxSizer>(wxHORIZONTAL);
+   auto item = safenew wxStaticText(w, 0, _("&Duration:"));
+   sizer->Add(item, 0, wxALIGN_CENTER | wxALL, 5);
+   auto& extra = settings.extra;
+   mDuration = safenew NumericTextCtrl(
+      FormatterContext::SampleRateContext(mSampleRate), w, ID_Duration,
+      NumericConverterType_TIME(), extra.GetDurationFormat(),
+      extra.GetDuration(),
+      NumericTextCtrl::Options{}.AutoPos(true));
+   mDuration->SetName(XO("Duration"));
+   sizer->Add(mDuration, 0, wxALIGN_CENTER | wxALL, 5);
+   auto groupSizer =
+      std::make_unique<wxStaticBoxSizer>(wxVERTICAL, w, _("Generator"));
+   groupSizer->Add(sizer.release(), 0, wxALIGN_CENTER | wxALL, 5);
+   innerSizer->Add(groupSizer.release(), 0, wxEXPAND | wxALL, 5);
+}
+
+void LV2Editor::BuildNumericInput(
+   wxScrolledWindow* w, wxFlexGridSizer& gridSizer,
+   size_t p, float value, const wxString& labelText)
+{
+   auto& state = mPortUIStates.mControlPortStates[p];
+   auto& port = state.mpPort;
+   auto& ctrl = mPlainUIControls[p];
+
+   // Numerical input gets a text input, with a validator...
+   auto textControl = safenew wxTextCtrl(w, ID_Texts + p, wxT(""));
+   textControl->SetName(labelText);
+   gridSizer.Add(textControl, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_LEFT);
+   ctrl.mText = textControl;
+
+   auto rate = port->mSampleRate ? mSampleRate : 1.0f;
+   state.mLo = port->mMin * rate;
+   state.mHi = port->mMax * rate;
+   state.mTmp = value * rate;
+
+   if (port->mInteger) {
+      IntegerValidator<float> vld(&state.mTmp);
+      vld.SetRange(state.mLo, state.mHi);
+      textControl->SetValidator(vld);
+   }
+   else {
+      FloatingPointValidator<float> vld(6, &state.mTmp);
+      vld.SetRange(state.mLo, state.mHi);
+
+      // Set number of decimal places
+      float range = state.mHi - state.mLo;
+      auto style = NumValidatorStyle::ONE_TRAILING_ZERO;
+      if (range < 10)
+         style = NumValidatorStyle::THREE_TRAILING_ZEROES;
+      else if (range < 100)
+         style = NumValidatorStyle::TWO_TRAILING_ZEROES;
+
+      vld.SetStyle(style);
+      textControl->SetValidator(vld);
+   }
+
+   // ... optional lower-bound static text ...
+   if (port->mHasLo) {
+      wxString str;
+      if (port->mInteger || port->mSampleRate)
+         str.Printf(wxT("%d"), (int)lrintf(state.mLo));
+      else
+         str = Internat::ToDisplayString(state.mLo);
+
+      auto item = safenew wxStaticText(w, wxID_ANY, str);
+      gridSizer.Add(item, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_RIGHT);
+   }
+   else
+      gridSizer.Add(1, 1, 0);
+
+   // ... a slider ...
+   auto slider = safenew wxSliderWrapper(
+      w, ID_Sliders + p,
+      0, 0, 1000, wxDefaultPosition, { 150, -1 });
+
+   slider->SetName(labelText);
+   gridSizer.Add(slider, 0, wxALIGN_CENTER_VERTICAL | wxEXPAND);
+   ctrl.slider = slider;
+
+   // ... and optional upper-bound static text
+   if (port->mHasHi) {
+      wxString str;
+      if (port->mInteger || port->mSampleRate)
+         str.Printf(wxT("%d"), (int)lrintf(state.mHi));
+      else
+         str = Internat::ToDisplayString(state.mHi);
+
+      auto item = safenew wxStaticText(w, wxID_ANY, str);
+      gridSizer.Add(item, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_LEFT);
+   }
+   else
+      gridSizer.Add(1, 1, 0);
+}
+
+void LV2Editor::BuildPlainControl(wxScrolledWindow* w, wxFlexGridSizer& gridSizer,size_t p, float value)
+{
+   auto& state = mPortUIStates.mControlPortStates[p];
+   auto& port = state.mpPort;
+   auto& ctrl = mPlainUIControls[p];
+
+   auto labelText = port->mName;
+   if (!port->mUnits.empty())
+      labelText += XO("(%s)").Format(port->mUnits).Translation();
+
+   // A "trigger" port gets a row with just a pushbutton
+   if (port->mTrigger) {
+      gridSizer.Add(1, 1, 0);
+
+      assert(w);
+      auto b = safenew wxButton(w, ID_Triggers + p, labelText);
+      gridSizer.Add(b, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_LEFT);
+      ctrl.button = b;
+
+      gridSizer.Add(1, 1, 0);
+      gridSizer.Add(1, 1, 0);
+      gridSizer.Add(1, 1, 0);
+      return;
+   }
+
+   // Any other kind of port gets a name text...
+   auto item = safenew wxStaticText(
+      w, wxID_ANY, labelText + wxT(":"),
+      wxDefaultPosition, wxDefaultSize, wxALIGN_RIGHT);
+
+   gridSizer.Add(item, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_RIGHT);
+
+   // ... then appropriate controls and static texts in other columns
+   if (port->mToggle) {
+      // Toggle port gets a checkbox
+      auto c = safenew wxCheckBox(w, ID_Toggles + p, wxT(""));
+      c->SetName(labelText);
+      c->SetValue(value > 0);
+      gridSizer.Add(c, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_LEFT);
+      ctrl.checkbox = c;
+
+      gridSizer.Add(1, 1, 0);
+      gridSizer.Add(1, 1, 0);
+      gridSizer.Add(1, 1, 0);
+   }
+   else if (port->mEnumeration) {
+      // Enumeration port gets a choice control
+      auto selection = port->Discretize(value);
+      auto c = safenew wxChoice(w, ID_Choices + p);
+      c->SetName(labelText);
+      c->Append(port->mScaleLabels);
+      c->SetSelection(selection);
+      gridSizer.Add(c, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_LEFT);
+      ctrl.choice = c;
+
+      gridSizer.Add(1, 1, 0);
+      gridSizer.Add(1, 1, 0);
+      gridSizer.Add(1, 1, 0);
+   }
+   else if (!port->mIsInput) {
+      // Real-valued output gets a meter control
+      gridSizer.Add(1, 1, 0);
+      gridSizer.Add(1, 1, 0);
+
+      static float sink;
+      const auto pOutputValues =
+         static_cast<const LV2EffectOutputs*>(mpOutputs);
+      const auto pValue =
+         pOutputValues ? &pOutputValues->values[p] : &sink;
+
+      // Captures a const reference to value
+      auto m = safenew LV2EffectMeter(w, port, *pValue);
+      gridSizer.Add(m, 0, wxALIGN_CENTER_VERTICAL | wxEXPAND);
+      ctrl.meter = m;
+
+      gridSizer.Add(1, 1, 0);
+   }
+   else {
+      BuildNumericInput(w, gridSizer, p, value, labelText);
+   }
+}
+
+void LV2Editor::BuildControlGroups(wxScrolledWindow* w, wxSizer* innerSizer, const std::vector<float>& values, int numCols)
+{
+   // Make other controls, grouped into static boxes that are named
+   // according to certain control port metadata
+   auto groups = mPorts.mGroups;
+   std::sort(groups.begin(), groups.end(), TranslationLess);
+
+   for (auto& label : groups) {
+      auto gridSizer = std::make_unique<wxFlexGridSizer>(numCols, 5, 5);
+      gridSizer->AddGrowableCol(3);
+
+      for (auto& p : mPorts.mGroupMap.at(label)) {
+         BuildPlainControl(w, *gridSizer, p, values[p]);
+      }
+
+      auto groupSizer = std::make_unique<wxStaticBoxSizer>(
+         wxVERTICAL, w, label.Translation());
+
+      groupSizer->Add(gridSizer.release(), 1, wxEXPAND | wxALL, 5);
+      innerSizer->Add(groupSizer.release(), 0, wxEXPAND | wxALL, 5);
+   }
+}
+
+void LV2Editor::AlignControlColumns(wxSizer * innerSizer, int numCols)
+{
+   //! Function to revisit the controls just added above
+   auto VisitCells = [&, cnt = innerSizer->GetChildren().GetCount()](auto f) {
+      for (size_t i = (mType == EffectTypeGenerate); i < cnt; ++i) {
+         // For each group (skipping duration) visit the grid sizer
+         auto groupSizer = innerSizer->GetItem(i)->GetSizer();
+         auto gridSizer = static_cast<wxFlexGridSizer*>(
+            groupSizer->GetItem(size_t{ 0 })->GetSizer());
+         auto items = gridSizer->GetChildren().GetCount();
+         size_t cols = gridSizer->GetCols();
+         for (size_t j = 0; j < items; ++j) {
+            // For each grid item
+            auto item = gridSizer->GetItem(j);
+            f(item, j, cols);
+         }
+      }
+      };
+
+   // Calculate the maximum width of all columns (bypass Generator sizer)
+   std::vector<int> widths(numCols);
+   VisitCells([&](wxSizerItem* item, size_t j, size_t cols) {
+      auto& width = widths[j % cols];
+      width = std::max(width, item->GetSize().GetWidth());
+      });
+
+   // Set each column in all of the groups to the same width.
+   VisitCells([&](wxSizerItem* item, size_t j, size_t cols) {
+      int flags = item->GetFlag();
+      if (flags & wxEXPAND)
+         return;
+      if (flags & wxALIGN_RIGHT)
+         flags = (flags & ~wxALL) | wxLEFT;
+      else
+         flags = (flags & ~wxALL) | wxRIGHT;
+      item->SetFlag(flags);
+      item->SetBorder(widths[j % cols] - item->GetMinSize().GetWidth());
+      });
+}
+
 bool LV2Editor::BuildPlain(EffectSettingsAccess &access)
 {
-   auto &portUIStates = mPortUIStates;
+   
    auto &settings = access.Get();
    auto &values = GetSettings(settings).values;
    mPlainUIControls.resize(mPorts.mControlPorts.size());
@@ -411,219 +700,15 @@ bool LV2Editor::BuildPlain(EffectSettingsAccess &access)
       auto uInnerSizer = std::make_unique<wxBoxSizer>(wxVERTICAL);
       innerSizer = uInnerSizer.get();
 
-      // Add the duration control, if a generator
-      if (mType == EffectTypeGenerate) {
-         auto sizer = std::make_unique<wxBoxSizer>(wxHORIZONTAL);
-         auto item = safenew wxStaticText(w, 0, _("&Duration:"));
-         sizer->Add(item, 0, wxALIGN_CENTER | wxALL, 5);
-         auto &extra = settings.extra;
-         mDuration = safenew NumericTextCtrl(
-            FormatterContext::SampleRateContext(mSampleRate), w, ID_Duration,
-            NumericConverterType_TIME(), extra.GetDurationFormat(),
-            extra.GetDuration(),
-            NumericTextCtrl::Options{}.AutoPos(true));
-         mDuration->SetName( XO("Duration") );
-         sizer->Add(mDuration, 0, wxALIGN_CENTER | wxALL, 5);
-         auto groupSizer =
-            std::make_unique<wxStaticBoxSizer>(wxVERTICAL, w, _("Generator"));
-         groupSizer->Add(sizer.release(), 0, wxALIGN_CENTER | wxALL, 5);
-         innerSizer->Add(groupSizer.release(), 0, wxEXPAND | wxALL, 5);
-      }
+      BuildDurationControl(w, innerSizer, settings);
 
-      // Make other controls, grouped into static boxes that are named
-      // according to certain control port metadata
-      auto groups = mPorts.mGroups; // mutable copy
-      std::sort(groups.begin(), groups.end(), TranslationLess);
-      for (auto &label: groups) {
-         auto gridSizer = std::make_unique<wxFlexGridSizer>(numCols, 5, 5);
-         gridSizer->AddGrowableCol(3);
-         for (auto & p : mPorts.mGroupMap.at(label)) /* won't throw */ {
-            auto &state = portUIStates.mControlPortStates[p];
-            auto &port = state.mpPort;
-            auto &ctrl = mPlainUIControls[p];
-            const auto &value = values[p];
-            auto labelText = port->mName;
-            if (!port->mUnits.empty())
-               labelText += XO("(%s)").Format(port->mUnits).Translation();
-
-            // A "trigger" port gets a row with just a pushbutton
-            if (port->mTrigger) {
-               gridSizer->Add(1, 1, 0);
-
-               assert(w); // To justify safenew
-               auto b = safenew wxButton(w, ID_Triggers + p, labelText);
-               gridSizer->Add(b, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_LEFT);
-               ctrl.button = b;
-
-               gridSizer->Add(1, 1, 0);
-               gridSizer->Add(1, 1, 0);
-               gridSizer->Add(1, 1, 0);
-               continue;
-            }
-
-            // Any other kind of port gets a name text...
-            auto item = safenew wxStaticText(w, wxID_ANY, labelText + wxT(":"),
-               wxDefaultPosition, wxDefaultSize, wxALIGN_RIGHT);
-            gridSizer->Add(item, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_RIGHT);
-
-            // ... then appropriate controls and static texts in other columns
-            if (port->mToggle) {
-               // Toggle port gets a checkbox
-               auto c = safenew wxCheckBox(w, ID_Toggles + p, wxT(""));
-               c->SetName(labelText);
-               c->SetValue(value > 0);
-               gridSizer->Add(c, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_LEFT);
-               ctrl.checkbox = c;
-
-               gridSizer->Add(1, 1, 0);
-               gridSizer->Add(1, 1, 0);
-               gridSizer->Add(1, 1, 0);
-            }
-            else if (port->mEnumeration) {
-               // Enumeration port gets a choice control
-               // Discretize the value (all ports hold a float value) to
-               // determine the intial selection
-               auto s = port->Discretize(value);
-               auto c = safenew wxChoice(w, ID_Choices + p);
-               c->SetName(labelText);
-               c->Append(port->mScaleLabels);
-               c->SetSelection(s);
-               gridSizer->Add(c, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_LEFT);
-               ctrl.choice = c;
-
-               gridSizer->Add(1, 1, 0);
-               gridSizer->Add(1, 1, 0);
-               gridSizer->Add(1, 1, 0);
-            }
-            else if (!port->mIsInput) {
-               // Real-valued output gets a meter control
-               gridSizer->Add(1, 1, 0);
-               gridSizer->Add(1, 1, 0);
-
-               static float sink;
-               const auto pOutputValues =
-                  static_cast<const LV2EffectOutputs*>(mpOutputs);
-               const auto pValue =
-                  pOutputValues ? &pOutputValues->values[p] : &sink;
-               //! Captures a const reference to value!
-               auto m = safenew LV2EffectMeter(w, port, *pValue);
-               gridSizer->Add(m, 0, wxALIGN_CENTER_VERTICAL | wxEXPAND);
-               ctrl.meter = m;
-
-               gridSizer->Add(1, 1, 0);
-            }
-            else {
-               // Numerical input gets a text input, with a validator...
-               auto t = safenew wxTextCtrl(w, ID_Texts + p, wxT(""));
-               t->SetName(labelText);
-               gridSizer->Add(t, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_LEFT);
-               ctrl.mText = t;
-               auto rate = port->mSampleRate ? mSampleRate : 1.0f;
-               state.mLo = port->mMin * rate;
-               state.mHi = port->mMax * rate;
-               state.mTmp = value * rate;
-               if (port->mInteger) {
-                  IntegerValidator<float> vld(&state.mTmp);
-                  vld.SetRange(state.mLo, state.mHi);
-                  t->SetValidator(vld);
-               }
-               else {
-                  FloatingPointValidator<float> vld(6, &state.mTmp);
-                  vld.SetRange(state.mLo, state.mHi);
-
-                  // Set number of decimal places
-                  float range = state.mHi - state.mLo;
-                  auto style = range < 10
-                     ? NumValidatorStyle::THREE_TRAILING_ZEROES
-                     : range < 100
-                        ? NumValidatorStyle::TWO_TRAILING_ZEROES
-                        : NumValidatorStyle::ONE_TRAILING_ZERO;
-                  vld.SetStyle(style);
-                  t->SetValidator(vld);
-               }
-
-               // ... optional lower-bound static text ...
-               if (port->mHasLo) {
-                  wxString str;
-                  if (port->mInteger || port->mSampleRate)
-                     str.Printf(wxT("%d"), (int) lrintf(state.mLo));
-                  else
-                     str = Internat::ToDisplayString(state.mLo);
-                  item = safenew wxStaticText(w, wxID_ANY, str);
-                  gridSizer->Add(item, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_RIGHT);
-               }
-               else
-                  gridSizer->Add(1, 1, 0);
-
-               // ... a slider ...
-               auto s = safenew wxSliderWrapper(w, ID_Sliders + p,
-                  0, 0, 1000, wxDefaultPosition, { 150, -1 });
-               s->SetName(labelText);
-               gridSizer->Add(s, 0, wxALIGN_CENTER_VERTICAL | wxEXPAND);
-               ctrl.slider = s;
-
-               // ... and optional upper-bound static text
-               if (port->mHasHi) {
-                  wxString str;
-                  if (port->mInteger || port->mSampleRate)
-                     str.Printf(wxT("%d"), (int) lrintf(state.mHi));
-                  else
-                     str = Internat::ToDisplayString(state.mHi);
-                  item = safenew wxStaticText(w, wxID_ANY, str);
-                  gridSizer->Add(item, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_LEFT);
-               }
-               else
-                  gridSizer->Add(1, 1, 0);
-            }
-         }
-
-         auto groupSizer = std::make_unique<wxStaticBoxSizer>(
-            wxVERTICAL, w, label.Translation());
-         groupSizer->Add(gridSizer.release(), 1, wxEXPAND | wxALL, 5);
-         innerSizer->Add(groupSizer.release(), 0, wxEXPAND | wxALL, 5);
-      }
+      // Extracted the original group loop into this helper.
+      BuildControlGroups(w, innerSizer, values, numCols);
 
       innerSizer->Layout();
-
-      //! Function to revisit the controls just added above
-      auto VisitCells = [&, cnt = innerSizer->GetChildren().GetCount()](auto f){
-         for (size_t i = (mType == EffectTypeGenerate); i < cnt; ++i) {
-            // For each group (skipping duration) visit the grid sizer
-            auto groupSizer = innerSizer->GetItem(i)->GetSizer();
-            auto gridSizer = static_cast<wxFlexGridSizer *>(
-               groupSizer->GetItem(size_t{0})->GetSizer());
-            auto items = gridSizer->GetChildren().GetCount();
-            size_t cols = gridSizer->GetCols();
-            for (size_t j = 0; j < items; ++j) {
-               // For each grid item
-               auto item = gridSizer->GetItem(j);
-               f(item, j, cols);
-            }
-         }
-      };
-
-      // Calculate the maximum width of all columns (bypass Generator sizer)
-      std::vector<int> widths(numCols);
-      VisitCells([&](wxSizerItem *item, size_t j, size_t cols){
-         auto &width = widths[j % cols];
-         width = std::max(width, item->GetSize().GetWidth());
-      });
-
-      // Set each column in all of the groups to the same width.
-      VisitCells([&](wxSizerItem *item, size_t j, size_t cols){
-         int flags = item->GetFlag();
-         if (flags & wxEXPAND)
-            return;
-         if (flags & wxALIGN_RIGHT)
-            flags = (flags & ~wxALL) | wxLEFT;
-         else
-            flags = (flags & ~wxALL) | wxRIGHT;
-         item->SetFlag(flags);
-         item->SetBorder(widths[j % cols] - item->GetMinSize().GetWidth());
-      });
-
+      AlignControlColumns(innerSizer, numCols);
+      
       w->SetSizer(uInnerSizer.release());
-
       mParent->SetSizer(outerSizer.release());
    } // scope of unique_ptrs of sizers
 
@@ -638,56 +723,61 @@ bool LV2Editor::BuildPlain(EffectSettingsAccess &access)
    return true;
 }
 
-bool LV2Editor::UpdateUI()
+void LV2Editor::RestorePluginState(const LV2EffectSettings& settings)
 {
-   const auto &mySettings = GetSettings(mAccess.Get());
+   
    auto pMaster = mInstance.GetMaster();
 
-   if (pMaster && mySettings.mpState) {
+   if (pMaster && settings.mpState) {
       // Maybe there are other important side effects on the instance besides
       // changes of port values
-      lilv_state_restore(mySettings.mpState.get(), &pMaster->GetInstance(),
+      lilv_state_restore(settings.mpState.get(), &pMaster->GetInstance(),
          nullptr, nullptr, 0, nullptr);
       // Destroy the short lived carrier of preset state
-      mySettings.mpState.reset();
+      settings.mpState.reset();
    }
+}
 
-   auto &values = mySettings.values;
+void LV2Editor::UpdatePortStates(const std::vector<float>& values)
+{
+   size_t index = 0;
+   for (auto& state : mPortUIStates.mControlPortStates)
    {
-      size_t index = 0; for (auto & state : mPortUIStates.mControlPortStates) {
-         auto &port = state.mpPort;
+      auto& port = state.mpPort;
+      if (port->mIsInput)
+         state.mTmp =
+         values[index] * (port->mSampleRate ? mSampleRate : 1.0);
+      ++index;
+   }
+}
+
+void LV2Editor::UpdateFancyUI(const std::vector<float>& values) {
+   // fancy UI
+   if (mUI.mSuilInstance) {
+      size_t index = 0;
+      for (auto& port : mPorts.mControlPorts) {
          if (port->mIsInput)
-            state.mTmp =
-               values[index] * (port->mSampleRate ? mSampleRate : 1.0);
+            suil_instance_port_event(mUI.mSuilInstance.get(),
+               port->mIndex, sizeof(float),
+               /* Means this event sends a float: */ 0,
+               &values[index]);
          ++index;
       }
    }
+   
+}
 
-   if (mUseGUI) {
-      // fancy UI
-      if (mUI.mSuilInstance) {
-         size_t index = 0;
-         for (auto & port : mPorts.mControlPorts) {
-            if (port->mIsInput)
-               suil_instance_port_event(mUI.mSuilInstance.get(),
-                  port->mIndex, sizeof(float),
-                  /* Means this event sends a float: */ 0,
-                  &values[index]);
-            ++index;
-         }
-      }
-      return true;
-   }
-
+void LV2Editor::UpdatePlainUI(const std::vector<float>& values)
+{
    // else plain UI
    // Visiting controls by groups
-   for (auto & group : mPorts.mGroups) {
-      const auto & params = mPorts.mGroupMap.at(group); /* won't throw */
-      for (auto & param : params) {
-         auto &state = mPortUIStates.mControlPortStates[param];
-         auto &port = state.mpPort;
-         auto &ctrl = mPlainUIControls[param];
-         auto &value = values[param];
+   for (auto& group : mPorts.mGroups) {
+      const auto& params = mPorts.mGroupMap.at(group); /* won't throw */
+      for (auto& param : params) {
+         auto& state = mPortUIStates.mControlPortStates[param];
+         auto& port = state.mpPort;
+         auto& ctrl = mPlainUIControls[param];
+         auto& value = values[param];
          if (port->mTrigger)
             continue;
          else if (port->mToggle)
@@ -700,6 +790,21 @@ bool LV2Editor::UpdateUI()
          }
       }
    }
+}
+
+bool LV2Editor::UpdateUI()
+{
+   const auto& mySettings = GetSettings(mAccess.Get());
+   RestorePluginState(mySettings);
+
+   UpdatePortStates(mySettings.values);
+   if (mUseGUI) {
+      UpdateFancyUI(mySettings.values);
+      return true;
+   }
+   
+   UpdatePlainUI(mySettings.values);
+   
    if (mParent && !mParent->TransferDataToWindow())
       return false;
    return true;
@@ -816,9 +921,75 @@ void LV2Editor::Timer::Notify()
       LV2_EXTERNAL_UI_RUN(mExternalWidget);
 }
 
-void LV2Editor::OnIdle(wxIdleEvent &evt)
+void LV2Editor::SendAtomEvents()
+{
+   auto& portUIStates = mPortUIStates;
+
+   if (auto& atomState = portUIStates.mControlOut) {
+      atomState->SendToDialog([&](const LV2_Atom* atom, uint32_t size) {
+         suil_instance_port_event(mUI.mSuilInstance.get(),
+            atomState->mpPort->mIndex, size,
+            // Means this event sends some structured data:
+            LV2Symbols::urid_EventTransfer, atom);
+         });
+   }
+}
+
+bool LV2Editor::ProcessUIIdle() {
+   if (mUIIdleInterface) {
+      const auto handle = suil_instance_get_handle(mUI.mSuilInstance.get());
+      if (mUIIdleInterface->idle && mUIIdleInterface->idle(handle)) {
+         if (mUIShowInterface && mUIShowInterface->hide)
+            mUIShowInterface->hide(handle);
+         if (mDialog)
+            mDialog->Close();
+          return true;
+      }
+   }
+   return false;
+}
+
+void LV2Editor::UpdateIdlePortValues()
+{
+   // Is this idle time polling for changes of input redundant with
+   // TransferDataToWindow or is it really needed?  Probably harmless.
+   // In case of output control port values though, it is needed for metering.
+   mAccess.Flush();
+   auto& values = GetSettings(mAccess.Get()).values;
+   auto pOutputValues = static_cast<const LV2EffectOutputs*>(mpOutputs);
+   auto& portUIStates = mPortUIStates;
+   size_t index = 0; for (auto& state : portUIStates.mControlPortStates) {
+      auto& port = state.mpPort;
+
+      const auto pValue = port->mIsInput
+         ? &values[index]
+         : pOutputValues ? &pOutputValues->values[index]
+         : nullptr;
+      if (pValue) {
+         auto& value = *pValue;
+         // Let UI know that a port's value has changed
+         if (value != state.mLst) {
+            suil_instance_port_event(mUI.mSuilInstance.get(),
+               port->mIndex, sizeof(value),
+               /* Means this event sends a float: */ 0,
+               /*
+                  Quoting what suil.h says about the next argument (which is good):
+
+                  The `buffer` must be valid only for the duration of this call, the UI must
+                  not keep a reference to it.
+                */
+               &value);
+            state.mLst = value;
+         }
+      }
+      ++index;
+   }
+}
+
+void LV2Editor::OnIdle(wxIdleEvent& evt)
 {
    evt.Skip();
+
    if (!mUI.mSuilInstance)
       return;
 
@@ -829,62 +1000,13 @@ void LV2Editor::OnIdle(wxIdleEvent &evt)
       return;
    }
 
-   if (mUIIdleInterface) {
-      const auto handle = suil_instance_get_handle(mUI.mSuilInstance.get());
-      if (mUIIdleInterface->idle && mUIIdleInterface->idle(handle)) {
-         if (mUIShowInterface && mUIShowInterface->hide)
-            mUIShowInterface->hide(handle);
-         if (mDialog)
-            mDialog->Close();
-         return;
-      }
-   }
+   if (ProcessUIIdle())
+      return;
 
-   auto &portUIStates = mPortUIStates;
-
-   if (auto &atomState = portUIStates.mControlOut) {
-      atomState->SendToDialog([&](const LV2_Atom *atom, uint32_t size){
-         suil_instance_port_event(mUI.mSuilInstance.get(),
-            atomState->mpPort->mIndex, size,
-            // Means this event sends some structured data:
-            LV2Symbols::urid_EventTransfer, atom);
-      });
-   }
-
-   // Is this idle time polling for changes of input redundant with
-   // TransferDataToWindow or is it really needed?  Probably harmless.
-   // In case of output control port values though, it is needed for metering.
-   mAccess.Flush();
-   auto& values = GetSettings(mAccess.Get()).values;
-   auto pOutputValues = static_cast<const LV2EffectOutputs *>(mpOutputs);
-
-   size_t index = 0; for (auto &state : portUIStates.mControlPortStates) {
-      auto &port = state.mpPort;
-
-      const auto pValue = port->mIsInput
-         ? &values[index]
-         : pOutputValues ? &pOutputValues->values[index]
-         : nullptr;
-      if (pValue) {
-         auto &value = *pValue;
-         // Let UI know that a port's value has changed
-         if (value != state.mLst) {
-            suil_instance_port_event(mUI.mSuilInstance.get(),
-               port->mIndex, sizeof(value),
-               /* Means this event sends a float: */ 0,
-/*
-   Quoting what suil.h says about the next argument (which is good):
-
-   The `buffer` must be valid only for the duration of this call, the UI must
-   not keep a reference to it.
- */
-               &value);
-            state.mLst = value;
-        }
-      }
-      ++index;
-   }
+   SendAtomEvents();
+   UpdateIdlePortValues();
 }
+
 
 void LV2Editor::OnSize(wxSizeEvent & evt)
 {
