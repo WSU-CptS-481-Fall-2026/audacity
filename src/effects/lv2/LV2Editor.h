@@ -84,7 +84,7 @@ public:
    /*!
     @pre `pWrapper != nullptr`
     */
-   void FindSupportedUI(
+   static void FindSupportedUI(
       LilvUIs* uis, const char* nativeType,
       const LilvUI*& ui, const LilvNode*& uiType);
    void SetupExternalUI();
