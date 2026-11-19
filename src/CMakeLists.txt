@@ -1467,3 +1467,10 @@ endforeach()
 
 #propagate collected edgets to root CMakeLists.txt
 set( GRAPH_EDGES "${GRAPH_EDGES}" PARENT_SCOPE )
+
+if( ${_OPT}has_tests )
+   add_executable( dtmf-tone-test tests/DtmfToneTest.cpp )
+   target_include_directories( dtmf-tone-test
+      PRIVATE ${CMAKE_SOURCE_DIR}/libraries/lib-builtin-effects )
+   add_test( NAME dtmf-tone COMMAND dtmf-tone-test )
+endif()

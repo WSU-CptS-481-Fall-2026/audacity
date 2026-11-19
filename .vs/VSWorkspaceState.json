@@ -1,0 +1,16 @@
+{
+  "OutputFoldersPerTargetSystem": {
+    "Local Machine": [
+      "build\\win-debug",
+      "build\\win-release",
+      "build\\win-asan"
+    ]
+  },
+  "ExpandedNodes": [
+    "",
+    "\\lib-src",
+    "\\lib-src\\libscorealign"
+  ],
+  "SelectedNode": "\\lib-src\\libscorealign\\scorealign-vc2010.sln",
+  "PreviewInSolutionExplorer": false
+}

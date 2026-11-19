@@ -23,6 +23,7 @@ set( SOURCES
    ContrastBase.h
    DtmfBase.cpp
    DtmfBase.h
+   DtmfTone.h
    DistortionBase.cpp
    DistortionBase.h
    EchoBase.cpp

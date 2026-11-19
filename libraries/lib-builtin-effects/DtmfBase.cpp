@@ -1,4 +1,5 @@
 #include "DtmfBase.h"
+#include "DtmfTone.h"
 #include "BasicUI.h"
 #include "Prefs.h"
 #include <cmath>
@@ -7,9 +8,6 @@ namespace
 {
 wxString AllSymbols();
 }
-
-static const double kFadeInOut =
-   250.0; // used for fadein/out needed to remove clicking noise
 
 namespace
 {
@@ -279,11 +277,11 @@ void DtmfSettings::Recalculate(EffectSettings& settings)
    DtmfBase::GetSettings(settings) = *this;
 }
 
-bool DtmfBase::MakeDtmfTone(
+/*bool DtmfBase::MakeDtmfTone(
    float* buffer, size_t len, float fs, wxChar tone, sampleCount last,
    sampleCount total, float amplitude)
 {
-   /*
+   
      --------------------------------------------
                  1209 Hz 1336 Hz 1477 Hz 1633 Hz
 
@@ -315,7 +313,7 @@ bool DtmfBase::MakeDtmfTone(
            This support is only for lowercase letters: uppercase
            are still considered to be the 'military'/carrier extra
            tones.
-   */
+   
 
    float f1, f2 = 0.0;
    double A, B;
@@ -472,6 +470,17 @@ bool DtmfBase::MakeDtmfTone(
       }
    }
    return true;
+}*/
+
+void DtmfBase::MakeDtmfTone(
+   float* buffer, size_t len, float fs, wxChar tone, sampleCount last,
+   sampleCount total, float amplitude)
+{
+   // The frequency table and the waveform maths live in DtmfTone.h, where
+   // they can be unit tested without wxWidgets or the effect framework.
+   DtmfTone::Generate(
+      buffer, len, fs, static_cast<char32_t>(tone), last.as_long_long(),
+      total.as_long_long(), amplitude);
 }
 
 std::shared_ptr<EffectInstance> DtmfBase::MakeInstance() const
