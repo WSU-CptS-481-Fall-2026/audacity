@@ -64,6 +64,10 @@ public:
    ~LV2Editor() override;
 
    bool ValidateUI() override;
+   void RestorePluginState(const LV2EffectSettings& settings);
+   void UpdatePortStates(const std::vector<float>& values);
+   void UpdateFancyUI(const std::vector<float>& values);
+   void UpdatePlainUI(const std::vector<float>& values);
    bool UpdateUI() override;
    bool IsGraphicalUI() override;
    void Disconnect() override;
@@ -80,8 +84,20 @@ public:
    /*!
     @pre `pWrapper != nullptr`
     */
+   static void FindSupportedUI(
+      LilvUIs* uis, const char* nativeType,
+      const LilvUI*& ui, const LilvNode*& uiType);
+   void SetupExternalUI();
+   bool SetupNativeUI(bool noResize);
+   void InitializeUIInterfaces();
+   const char* ConfigureUIContainer(const LilvNode* uiType, const char* nativeType);
    bool BuildFancy(std::unique_ptr<LV2Wrapper> pWrapper,
       const EffectSettings &settings);
+   void BuildDurationControl(wxScrolledWindow* w, wxSizer* innerSizer, const EffectSettings& settings);
+   void BuildNumericInput(wxScrolledWindow* w, wxFlexGridSizer& gridSizer,size_t p, float value, const wxString& labelText);
+   void BuildPlainControl(wxScrolledWindow* w, wxFlexGridSizer& gridSizer, size_t p, float value);
+   void BuildControlGroups(wxScrolledWindow* w, wxSizer* innerSizer, const std::vector<float>& values, int numCols);
+   void AlignControlColumns(wxSizer* innerSizer, int numCols);
    bool BuildPlain(EffectSettingsAccess &access);
 
    void suil_port_write(uint32_t port_index,
@@ -96,6 +112,11 @@ public:
    void OnText(wxCommandEvent & evt);
    void OnSlider(wxCommandEvent & evt);
 
+
+   bool ProcessUIIdle();
+   void SendAtomEvents();
+   void UpdateIdlePortValues();
+   
    void OnIdle(wxIdleEvent & evt);
    void OnSize(wxSizeEvent & evt);
 
