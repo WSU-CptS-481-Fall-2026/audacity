@@ -548,8 +548,6 @@ set( SOURCES
       import/ImportStreamDialog.h
       import/MultiFormatReader.cpp
       import/MultiFormatReader.h
-      import/RawAudioGuess.cpp
-      import/RawAudioGuess.h
       import/SpecPowerMeter.cpp
       import/SpecPowerMeter.h
       import/ImportRaw.cpp
@@ -1467,3 +1465,17 @@ endforeach()
 
 #propagate collected edgets to root CMakeLists.txt
 set( GRAPH_EDGES "${GRAPH_EDGES}" PARENT_SCOPE )
+
+if( ${_OPT}has_tests )
+   add_executable( raw-import-settings-test tests/RawImportSettingsTest.cpp )
+   target_include_directories( raw-import-settings-test
+      PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/import )
+   target_link_libraries( raw-import-settings-test PRIVATE SndFile::sndfile )
+   add_test( NAME raw-import-settings COMMAND raw-import-settings-test )
+ 
+   add_executable( tags-editor-helpers-test tests/TagsEditorHelpersTest.cpp )
+   target_include_directories( tags-editor-helpers-test
+      PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} )
+   target_link_libraries( tags-editor-helpers-test PRIVATE lib-tags )
+   add_test( NAME tags-editor-helpers COMMAND tags-editor-helpers-test )
+endif()
